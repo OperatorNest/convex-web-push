@@ -1,0 +1,11 @@
+minimumReleaseAge: 1440
+minimumReleaseAgeStrict: true
+minimumReleaseAgeIgnoreMissingTime: false
+trustPolicy: no-downgrade
+trustLockfile: false
+blockExoticSubdeps: true
+strictPeerDependencies: true
+strictDepBuilds: true
+allowBuilds:
+  esbuild@0.27.0: true
+verifyDepsBeforeRun: error

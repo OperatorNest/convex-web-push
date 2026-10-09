@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a change to the component or client API.
+labels: ["type:feature", "status:needs-triage"]
+body:
+  - type: textarea
+    id: user_task
+    attributes:
+      label: User task
+      description: What are you trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: limitation
+    attributes:
+      label: Current limitation
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or other approaches have you considered?
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility impact
+      description: Describe effects on existing APIs, data, or behavior. Write “unknown” if unsure.
+    validations:
+      required: true

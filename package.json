@@ -1,0 +1,126 @@
+{
+  "name": "@operatornest/convex-web-push",
+  "version": "0.1.1",
+  "description": "Web Push for Convex: VAPID notifications with WebCrypto only, durable delivery and subscription pruning.",
+  "keywords": [
+    "component",
+    "convex",
+    "notifications",
+    "push-notifications",
+    "pwa",
+    "vapid",
+    "web-push"
+  ],
+  "homepage": "https://github.com/OperatorNest/convex-web-push#readme",
+  "bugs": {
+    "url": "https://github.com/OperatorNest/convex-web-push/issues"
+  },
+  "license": "MIT",
+  "author": "OperatorNest",
+  "contributors": [
+    {
+      "name": "Ravalika Korthiwada",
+      "url": "https://github.com/ravalikamaker"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OperatorNest/convex-web-push.git"
+  },
+  "bin": {
+    "convex-web-push": "bin/convex-web-push.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "src",
+    "sw",
+    "!src/**/*.test.ts",
+    "!src/test-helpers.ts",
+    "!src/test-raw.d.ts"
+  ],
+  "type": "module",
+  "sideEffects": [
+    "./sw/convex-web-push-sw.js"
+  ],
+  "module": "./dist/client/index.js",
+  "types": "./dist/client/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "default": "./dist/browser/index.js"
+    },
+    "./sw": {
+      "types": "./dist/sw/index.d.ts",
+      "default": "./dist/sw/index.js"
+    },
+    "./convex-web-push-sw.js": "./sw/convex-web-push-sw.js",
+    "./test": "./src/test.ts",
+    "./_generated/component.js": {
+      "types": "./dist/component/_generated/component.d.ts"
+    },
+    "./_generated/component": {
+      "types": "./dist/component/_generated/component.d.ts"
+    },
+    "./convex.config.js": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./convex.config": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build:codegen": "node scripts/with-local-lock.mjs pnpm run build:codegen:locked",
+    "build:codegen:locked": "convex codegen --component-dir ./src/component && pnpm build && convex codegen",
+    "build": "node node_modules/@typescript/native/bin/tsc -p tsconfig.build.json",
+    "build:clean": "rm -rf dist *.tsbuildinfo && pnpm build:codegen",
+    "typecheck": "node node_modules/@typescript/native/bin/tsc --noEmit && node node_modules/@typescript/native/bin/tsc -p tsconfig.test.json && node node_modules/@typescript/native/bin/tsc -p example/convex/tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives .",
+    "fmt": "oxfmt .",
+    "fmt:check": "oxfmt --check .",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "check": "pnpm fmt:check && pnpm build && pnpm lint && pnpm typecheck && pnpm knip && pnpm test",
+    "changeset": "changeset",
+    "knip": "knip --no-progress"
+  },
+  "dependencies": {
+    "@convex-dev/workpool": "^0.4.13"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3",
+    "@convex-dev/eslint-plugin": "5.0.0",
+    "@edge-runtime/vm": "5.0.0",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "@vitest/coverage-v8": "5.0.3",
+    "convex": "1.46.0",
+    "convex-helpers": "0.1.126",
+    "convex-test": "0.0.60",
+    "knip": "6.39.0",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "oxlint-tsgolint": "7.0.2003",
+    "pkg-pr-new": "0.0.88",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "vitest": "5.0.3"
+  },
+  "peerDependencies": {
+    "convex": "^1.46.0",
+    "convex-helpers": "^0.1.106"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "pnpm@12.9.1"
+}

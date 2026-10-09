@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/component/**/*.ts",
+    "example/convex/**/*.ts",
+    "scripts/*.mjs",
+    "bin/*.js",
+    "sw/*.js"
+  ],
+  "project": ["src/**/*.ts", "example/convex/**/*.ts", "scripts/*.mjs", "bin/*.js", "sw/*.js"],
+  "ignoreExportsUsedInFile": true
+}

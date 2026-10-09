@@ -1,0 +1,61 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "plugins": ["oxc", "typescript", "unicorn", "import", "promise"],
+  "jsPlugins": [{ "name": "@convex-dev", "specifier": "@convex-dev/eslint-plugin" }],
+  "ignorePatterns": ["dist/**", "**/_generated/**", "node_modules/**", ".convex/**", "coverage/**"],
+  "rules": {
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "no-underscore-dangle": ["error", { "allow": ["_id", "_creationTime"] }]
+  },
+  "overrides": [
+    {
+      "files": ["src/**/*.ts"],
+      "rules": {
+        "import/no-nodejs-modules": "error",
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              { "group": ["node:*"], "message": "Shipped code must run without Node.js APIs." }
+            ]
+          }
+        ],
+        "no-restricted-globals": [
+          "error",
+          { "name": "Buffer", "message": "Use Uint8Array and Web APIs." },
+          { "name": "process", "message": "Read configuration through the generated env." }
+        ]
+      }
+    },
+    {
+      "files": ["src/component/**/*.ts", "example/convex/**/*.ts"],
+      "rules": {
+        "@convex-dev/no-old-registered-function-syntax": "error",
+        "@convex-dev/require-args-validator": "error",
+        "@convex-dev/explicit-table-ids": "error",
+        "@convex-dev/no-filter-in-query": "error",
+        "@convex-dev/no-top-of-hour-crons": "error",
+        "@convex-dev/no-schema-import-cycle": "error",
+        "@convex-dev/no-duplicate-indexes": "error",
+        "@convex-dev/no-process-env": "error"
+      }
+    },
+    {
+      "files": ["src/component/**/*.ts", "**/*.test.ts", "scripts/**/*.mjs"],
+      "rules": { "no-await-in-loop": "off" }
+    },
+    {
+      "files": ["**/*.test.ts", "src/test-helpers.ts", "example/**/*.ts"],
+      "rules": {
+        "typescript/no-unsafe-type-assertion": "off",
+        "typescript/unbound-method": "off"
+      }
+    }
+  ]
+}

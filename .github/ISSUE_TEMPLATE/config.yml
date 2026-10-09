@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and community support
+    url: https://github.com/orgs/OperatorNest/discussions/categories/q-a
+    about: Ask questions in the OperatorNest community Q&A.
+  - name: Private vulnerability reporting
+    url: https://github.com/OperatorNest/convex-web-push/security/advisories/new
+    about: Report security vulnerabilities privately. Do not file a public issue.

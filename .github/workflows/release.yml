@@ -1,0 +1,105 @@
+name: Release
+on:
+  push:
+    branches: [main]
+permissions: {}
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+  publish:
+    needs: ci
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@94c60b39bc2d90ab2f9bab27f38d3cc4812c1834 # v5.1.0
+        with:
+          install_args: pnpm
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26"
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - id: version
+        name: Check whether this version is already on npm
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$version" = "0.0.0" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif out=$(npm view "$name@$version" version 2>&1); then
+            echo "$name@$version is already published"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$out" | grep -q "E404"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$out" >&2
+            exit 1
+          fi
+      - if: steps.version.outputs.publish == 'true'
+        run: npm publish --access public
+  tag:
+    needs: publish
+    if: needs.publish.outputs.version != '0.0.0'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.publish.outputs.version }}
+      TAG: v${{ needs.publish.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Create or verify the tag at the published commit
+        run: |
+          # Tag the commit npm recorded for this version (gitHead), not HEAD, so
+          # non-release merges pass quietly and a rerun after a partial failure
+          # still tags the right commit.
+          name=$(node -p "require('./package.json').name")
+          encoded=$(node -p "encodeURIComponent(process.argv[1])" "$name")
+          target=$(curl -fsSL "https://registry.npmjs.org/$encoded" | node -e '
+            let body = "";
+            process.stdin.on("data", (chunk) => (body += chunk));
+            process.stdin.on("end", () => {
+              const head = JSON.parse(body).versions?.[process.argv[1]]?.gitHead;
+              if (!head) process.exit(1);
+              process.stdout.write(head);
+            });
+          ' "$VERSION") || { echo "npm has no gitHead for $name@$VERSION" >&2; exit 1; }
+          if existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null); then
+            if [ "$existing" != "$target" ]; then
+              echo "$TAG points at $existing, but $name@$VERSION was published from $target" >&2
+              exit 1
+            fi
+            echo "$TAG already points at the published commit $target"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$target" >/dev/null
+            echo "Created $TAG at $target"
+          fi
+      - name: Create the GitHub release from the changelog
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists"
+            exit 0
+          fi
+          name=$(node -p "require('./package.json').name")
+          awk -v v="$VERSION" '$0 == "## " v { found = 1; next } found && /^## / { exit } found { print }' CHANGELOG.md > notes.md
+          printf '\nnpm: https://www.npmjs.com/package/%s/v/%s\n' "$name" "$VERSION" >> notes.md
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md --latest

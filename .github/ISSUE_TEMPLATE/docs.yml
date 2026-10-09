@@ -1,0 +1,29 @@
+name: Documentation issue
+description: Report incorrect or missing documentation.
+labels: ["type:docs", "status:needs-triage"]
+body:
+  - type: input
+    id: page_url
+    attributes:
+      label: Documentation page or section URL
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong or missing?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed_fix
+    attributes:
+      label: Proposed fix
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Package version or documentation version
+      description: Include the version where you encountered the issue, if relevant.
+    validations:
+      required: true
