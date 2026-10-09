@@ -56,7 +56,7 @@ jobs:
     needs: publish
     if: needs.publish.outputs.version != '0.0.0'
     runs-on: ubuntu-26.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     permissions:
       contents: write
     env:
@@ -74,15 +74,27 @@ jobs:
           # still tags the right commit.
           name=$(node -p "require('./package.json').name")
           encoded=$(node -p "encodeURIComponent(process.argv[1])" "$name")
-          target=$(curl -fsSL "https://registry.npmjs.org/$encoded" | node -e '
-            let body = "";
-            process.stdin.on("data", (chunk) => (body += chunk));
-            process.stdin.on("end", () => {
-              const head = JSON.parse(body).versions?.[process.argv[1]]?.gitHead;
-              if (!head) process.exit(1);
-              process.stdout.write(head);
-            });
-          ' "$VERSION") || { echo "npm has no gitHead for $name@$VERSION" >&2; exit 1; }
+          # npm processes a new version for a few minutes before the registry
+          # serves it, so wait up to 15 minutes for the gitHead to appear.
+          for attempt in $(seq 1 30); do
+            if target=$(curl -fsSL "https://registry.npmjs.org/$encoded?attempt=$attempt" | node -e '
+              let body = "";
+              process.stdin.on("data", (chunk) => (body += chunk));
+              process.stdin.on("end", () => {
+                const head = JSON.parse(body).versions?.[process.argv[1]]?.gitHead;
+                if (!head) process.exit(1);
+                process.stdout.write(head);
+              });
+            ' "$VERSION"); then
+              break
+            fi
+            target=""
+            sleep 30
+          done
+          if [ -z "$target" ]; then
+            echo "npm has no gitHead for $name@$VERSION after 15 minutes" >&2
+            exit 1
+          fi
           if existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null); then
             if [ "$existing" != "$target" ]; then
               echo "$TAG points at $existing, but $name@$VERSION was published from $target" >&2
