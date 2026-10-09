@@ -1,6 +1,6 @@
 {
   "name": "@operatornest/convex-web-push",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Web Push for Convex: VAPID notifications with WebCrypto only, durable delivery and subscription pruning.",
   "keywords": [
     "component",
