@@ -1,4 +1,5 @@
 import { base64urlDecode } from "./base64url.js";
+import { readBoundedText } from "./bounds.js";
 import { classifyPushStatus } from "./classify.js";
 import { encryptAes128gcm } from "./encrypt.js";
 import { isWebPushError, webPushError, type WebPushErrorCode } from "./errors.js";
@@ -7,6 +8,7 @@ import type { DeliveryErrorKind, SendOutcome, Urgency } from "./validators.js";
 import { signVapidJwt, vapidAuthorization } from "./vapid.js";
 
 const SEND_TIMEOUT_MS = 10_000;
+const RESPONSE_MAX_BYTES = 4096;
 
 /** A push request carries its subscription, plaintext, delivery options and imported VAPID signing key. */
 export type SendWebPushInput = {
@@ -90,7 +92,7 @@ export async function sendWebPush(input: SendWebPushInput): Promise<SendOutcome>
       response.headers.get("Retry-After"),
       input.now ?? Date.now(),
     );
-    await response.body?.cancel().catch(() => {});
+    await readBoundedText(response, RESPONSE_MAX_BYTES).catch(() => undefined);
     if (outcome.kind !== "sent")
       outcome.error = webPushError("WEB_PUSH_PROVIDER_ERROR", {
         providerStatus: response.status,

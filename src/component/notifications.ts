@@ -5,7 +5,13 @@ import {
 } from "convex/server";
 import { type ConvexError, v, type Infer } from "convex/values";
 import { paginator } from "convex-helpers/server/pagination";
-import { boundedPage, boundedString, validateHosts } from "../shared/bounds.js";
+import {
+  boundedPage,
+  boundedString,
+  boundedUtf8String,
+  validateHosts,
+  validateIdempotencyKey,
+} from "../shared/bounds.js";
 import { base64urlEncode, base64urlDecode, utf8ByteLength } from "../shared/base64url.js";
 import {
   readConfig,
@@ -48,7 +54,7 @@ function isMutationHandle(handle: string): handle is FunctionHandle<"mutation"> 
 
 function validateSend(args: SendFields, testMode: boolean, config: WebPushConfig) {
   validateHosts(args.allowedPushHosts);
-  if (args.idempotencyKey !== undefined) boundedString(args.idempotencyKey, 256);
+  if (args.idempotencyKey !== undefined) validateIdempotencyKey(args.idempotencyKey);
   if (args.onComplete !== undefined) {
     boundedString(args.onComplete, 1024);
     if (!isMutationHandle(args.onComplete)) throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
@@ -168,7 +174,7 @@ export const send = mutation({
   args: { userId: v.string(), ...sendFieldsValidator.fields },
   returns: v.union(v.id("notifications"), v.null()),
   handler: async (ctx, { userId, ...args }) => {
-    boundedString(userId, 256);
+    boundedUtf8String(userId, 256);
     const testMode = resolveTestMode(args.testMode, env);
     validateSend(args, testMode, readConfig(env));
     const replay = await findReplay(ctx, userId, args, testMode);
@@ -261,7 +267,7 @@ export const sendBatch = mutation({
   }),
   handler: async (ctx, { userIds, ...args }) => {
     if (userIds.length > MAX_BATCH_USERS) throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
-    for (const userId of userIds) boundedString(userId, 256);
+    for (const userId of userIds) boundedUtf8String(userId, 256);
     const unique = [...new Set(userIds)];
     const config = readConfig(env);
     const testMode = resolveTestMode(args.testMode, env);
@@ -333,7 +339,7 @@ export const get = query({
   },
   returns: schema.doc("notifications"),
   handler: async (ctx, { notificationId, userId, testMode }) => {
-    boundedString(userId, 256);
+    boundedUtf8String(userId, 256);
     const notification = await ctx.db.get("notifications", notificationId);
     if (notification?.userId !== userId || notification.testMode !== resolveTestMode(testMode, env))
       throw webPushError("WEB_PUSH_NOT_FOUND");
@@ -350,7 +356,7 @@ export const list = query({
   returns: paginationResultValidator(schema.doc("notifications")),
 
   handler: (ctx, { userId, testMode, paginationOpts }) => {
-    boundedString(userId, 256);
+    boundedUtf8String(userId, 256);
     return paginator(ctx.db, schema)
       .query("notifications")
       .withIndex("by_userId_and_testMode_and_createdAt", (q) =>

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ConvexHttpClient } from "convex/browser";
+import { ConvexError } from "convex/values";
 
 const root = resolve(import.meta.dirname, "..");
 const convexBin = join(root, "node_modules/convex/bin/main.js");
@@ -12,6 +13,7 @@ const lockOwnerFile = join(tmpdir(), "operatornest-convex-local.lock", "owner");
 const READY_TIMEOUT_MS = 300_000;
 const STOP_TIMEOUT_MS = 15_000;
 const POLL_INTERVAL_MS = 250;
+const WAIT_TIMEOUT_MS = 120_000;
 const OUTPUT_TAIL_CHARS = 4_000;
 const DEFAULT_PATHS = ["src", "dist", "example", "package.json", "convex.json"];
 const SCRUBBED_ENV_NAMES = new Set([
@@ -46,8 +48,41 @@ function tailText(text) {
   return text.slice(-OUTPUT_TAIL_CHARS);
 }
 
+/** Returns the string `code` of a `ConvexError`'s data object, else `undefined`. */
+export function errorCodeOf(error) {
+  if (!(error instanceof ConvexError)) return undefined;
+  const { data } = error;
+  return typeof data === "object" && data !== null && typeof data.code === "string"
+    ? data.code
+    : undefined;
+}
+
+function describeStepFailure(error) {
+  return errorCodeOf(error) ?? describeError(error).split("\n", 1)[0];
+}
+
+/** Throws an `Error` with `message` when `condition` is falsy. */
+export function assertSmoke(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
 /**
- * Runs one smoke step and prints `PASS <number> <name>` or `FAIL <number> <name>: <message>`.
+ * Awaits `check()` every 250 ms until it resolves a truthy value and returns that value. Throws
+ * when `timeoutMs` (default 120000) elapses first; an error thrown by `check` propagates at once.
+ */
+export async function waitFor(check, { timeoutMs = WAIT_TIMEOUT_MS } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await check();
+    if (value) return value;
+    if (Date.now() >= deadline) throw new Error(`waitFor timed out after ${timeoutMs} ms`);
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
+/**
+ * Runs one smoke step and prints `PASS <number> <name>` or `FAIL <number> <name>: <reason>`, where
+ * `<reason>` is the error's `errorCodeOf` code when present, else the first line of its message.
  * A failing step sets `process.exitCode = 1` and does not throw, so later steps still run.
  */
 export async function step(name, fn) {
@@ -60,7 +95,7 @@ export async function step(name, fn) {
     console.log(`PASS ${label}`);
   } catch (error) {
     process.exitCode = 1;
-    console.error(`FAIL ${label}: ${describeError(error)}`);
+    console.error(`FAIL ${label}: ${describeStepFailure(error)}`);
   }
 }
 

@@ -23,7 +23,7 @@ test("the factory uses a fixed message and an optional HTTP status", () => {
   expect(plain).toBeInstanceOf(ConvexError);
   expect(plain.data).toEqual({
     code: "WEB_PUSH_INVALID_ARGUMENT",
-    message: "An argument is empty, malformed or outside its bounds.",
+    message: "An argument is missing, malformed or out of bounds.",
   });
   expect(
     webPushError("WEB_PUSH_PROVIDER_ERROR", { providerStatus: 503, retryable: true }).data

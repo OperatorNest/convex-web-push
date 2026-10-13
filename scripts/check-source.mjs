@@ -47,13 +47,26 @@ function sourceRules(source, filename, reexportedNames = new Set()) {
     },
   );
   const checker = program.getTypeChecker();
-  const report = (node, rule) => {
-    const key = `${node.getStart(file)}:${rule}`;
+  const reportAt = (position, rule) => {
+    const key = `${position}:${rule}`;
     if (reported.has(key)) return;
     reported.add(key);
-    const { line } = file.getLineAndCharacterOfPosition(node.getStart(file));
+    const { line } = file.getLineAndCharacterOfPosition(position);
     violations.push(`${filename}:${line + 1}: ${rule}`);
   };
+  const report = (node, rule) => reportAt(node.getStart(file), rule);
+  function suppressions(node) {
+    for (const range of [
+      ...(ts.getLeadingCommentRanges(source, node.pos) ?? []),
+      ...(ts.getTrailingCommentRanges(source, node.pos) ?? []),
+    ])
+      if (/(?:oxlint|eslint)-disable/.test(source.slice(range.pos, range.end)))
+        reportAt(range.pos, "lint suppression");
+    for (const child of node.getChildren(file))
+      if (child.kind < ts.SyntaxKind.FirstJSDocNode || child.kind > ts.SyntaxKind.LastJSDocNode)
+        suppressions(child);
+  }
+  if (!filename.includes("/_generated/")) suppressions(file);
   function resolve(node, seen = new Set()) {
     if (ts.isIdentifier(node)) {
       const symbol = checker.getSymbolAtLocation(node);
@@ -202,12 +215,16 @@ function sourceRules(source, filename, reexportedNames = new Set()) {
 }
 
 const files = [];
-for (const root of ["src", "example"]) {
+for (const [root, extension] of [
+  ["src", ".ts"],
+  ["example", ".ts"],
+  ["scripts", ".mjs"],
+]) {
   try {
     for (const file of await readdir(root, { recursive: true }))
-      if (file.endsWith(".ts")) files.push(path.join(root, file));
+      if (file.endsWith(extension)) files.push(path.join(root, file));
   } catch (error) {
-    if (root !== "example" || error.code !== "ENOENT") throw error;
+    if (root === "src" || error.code !== "ENOENT") throw error;
   }
 }
 const sources = new Map();
@@ -225,5 +242,5 @@ if (violations.length) {
   console.error(violations.join("\n"));
   process.exitCode = 1;
 } else {
-  console.log(`Source invariants: 0 violations in ${files.length} TypeScript files`);
+  console.log(`Source invariants: 0 violations in ${files.length} source files`);
 }

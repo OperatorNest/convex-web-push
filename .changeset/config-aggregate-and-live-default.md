@@ -15,6 +15,8 @@
 - Breaking: error data carries retryable only on WEB_PUSH_PROVIDER_ERROR and WEB_PUSH_NETWORK_ERROR, and isWebPushError rejects data with unknown keys or with retryable on any other code.
 - Breaking: notifications.list forwards only numItems, cursor and endCursor from paginationOpts; the component fixes its read budgets.
 - Breaking: the convex-helpers peer range is ^0.1.128.
+- Breaking: an idempotency key must be 1 to 128 characters from A-Z, a-z, 0-9, _ and -; any other key raises WEB_PUSH_INVALID_ARGUMENT.
+- Breaking: WEB_PUSH_INVALID_ARGUMENT has the message "An argument is missing, malformed or out of bounds." and WEB_PUSH_NETWORK_ERROR has the message "The request to the push service failed before a response arrived."; isWebPushError accepts only these messages for these codes.
 - History cursors are accepted when they are at most 4096 characters and a JSON array of at most 16 primitive values.
 - The client passes omitted optional arguments as undefined.
 - A package error in a batch continuation step, including an idempotency conflict, fails the batch after saving the users already enqueued and schedules onBatchComplete.
@@ -25,3 +27,5 @@
 - The copied service worker keeps empty-string payload titles and URLs, parses non-object JSON as a text body, resolves click URLs like registerPushHandlers and takes icon and badge defaults from its DEFAULTS object.
 - The example getBatch returns no null; notifications.getBatch raises WEB_PUSH_NOT_FOUND for a missing batch.
 - Document that subscriptions.getStatus counts recorded, unpaused subscriptions as active regardless of expirationTime, and that subscriptionOwners keeps one permanent row per user and test mode.
+- Each push service response body is read up to 4096 bytes and discarded instead of being cancelled unread.
+- The retention cron is named cleanup.

@@ -92,6 +92,26 @@ test("classifies responses without retaining their bodies", async () => {
   expect(await sendWebPush(input)).toMatchObject({ kind: "retryable", retryAfterMs: 45_000 });
 });
 
+test("a response body that fails or exceeds its bound keeps the status outcome", async () => {
+  const { input } = await setup();
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            controller.error(new TypeError("body reset"));
+          },
+        }),
+        { status: 201 },
+      ),
+  );
+  expect(await sendWebPush(input)).toMatchObject({ kind: "sent", attempted: true });
+
+  vi.stubGlobal("fetch", async () => new Response("x".repeat(5000), { status: 201 }));
+  expect(await sendWebPush(input)).toMatchObject({ kind: "sent", attempted: true });
+});
+
 test("network errors and timeouts are retryable", async () => {
   const { input } = await setup();
   vi.stubGlobal("fetch", async () => {
@@ -138,7 +158,7 @@ test("a successful response body is cancelled, not left open", async () => {
   expect(cancelled).toBe(true);
 });
 
-test("push failures cancel response bodies without reading or retaining them", async () => {
+test("push failures read at most 4096 response body bytes, cancel the rest and retain none", async () => {
   const { subscription } = await makeSubscription();
   const keys = await generateVapidKeys();
   const cancel = vi.fn();
@@ -166,6 +186,6 @@ test("push failures cancel response bodies without reading or retaining them", a
     },
   });
   expect(cancel).toHaveBeenCalled();
-  expect(pulls).toBeLessThanOrEqual(1);
+  expect(pulls).toBeLessThanOrEqual(6);
   expect(JSON.stringify(outcome)).not.toContain(subscription.endpoint);
 });

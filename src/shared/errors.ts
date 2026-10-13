@@ -26,11 +26,11 @@ const WEB_PUSH_PROVIDER_ERROR_CODES = [
 const WEB_PUSH_ERROR_MESSAGES = {
   WEB_PUSH_NOT_CONFIGURED:
     "Component configuration is missing, malformed or changed during a batch.",
-  WEB_PUSH_INVALID_ARGUMENT: "An argument is empty, malformed or outside its bounds.",
+  WEB_PUSH_INVALID_ARGUMENT: "An argument is missing, malformed or out of bounds.",
   WEB_PUSH_NOT_FOUND: "The referenced row does not exist for this user and test mode.",
   WEB_PUSH_IDEMPOTENCY_CONFLICT: "The idempotency key was reused with different arguments.",
   WEB_PUSH_PROVIDER_ERROR: "The push service rejected the message.",
-  WEB_PUSH_NETWORK_ERROR: "The push service request produced no response.",
+  WEB_PUSH_NETWORK_ERROR: "The request to the push service failed before a response arrived.",
   WEB_PUSH_PAYLOAD_TOO_LARGE:
     "The plaintext exceeds 3993 bytes or the encoded input exceeds 5324 UTF-16 code units.",
   WEB_PUSH_CRYPTO_UNSUPPORTED: "The runtime cannot complete the required WebCrypto operation.",
@@ -57,6 +57,7 @@ export type WebPushErrorCode = (typeof WEB_PUSH_ERROR_CODES)[number];
 export type WebPushErrorData = {
   code: WebPushErrorCode;
   message: string;
+  /** `true` only when repeating the identical call cannot create a second provider effect: the call is a read, the call carries an idempotency key the component or provider deduplicates, or the provider definitively refused without effect. */
   retryable?: boolean;
   providerStatus?: number;
   providerCode?: string;

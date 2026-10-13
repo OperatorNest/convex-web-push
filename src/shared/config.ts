@@ -4,6 +4,7 @@ import { parsePrivateKey, parsePublicKey, validateVapidSubject } from "./vapid.j
 
 export const DEFAULT_MAX_PARALLELISM = 10;
 
+// repository-config:begin
 /** Component env values the component reads; each stays an optional string until `readConfig` validates it. */
 export type ComponentEnv = {
   readonly WEB_PUSH_VAPID_PUBLIC_KEY?: string;
@@ -46,8 +47,9 @@ export function readConfig(env: ComponentEnv): WebPushConfig {
     if (!parsed.ok) throw webPushError("WEB_PUSH_NOT_CONFIGURED");
     config.publicKey = base64urlEncode(parsed.bytes);
   }
-  if (env.WEB_PUSH_VAPID_PRIVATE_KEY !== undefined) {
-    const parsed = parsePrivateKey(env.WEB_PUSH_VAPID_PRIVATE_KEY);
+  const privateKey = readSecret(env.WEB_PUSH_VAPID_PRIVATE_KEY);
+  if (privateKey !== undefined) {
+    const parsed = parsePrivateKey(privateKey);
     if (!parsed.ok) throw webPushError("WEB_PUSH_NOT_CONFIGURED");
     config.privateKey = base64urlEncode(parsed.bytes);
   }
@@ -58,8 +60,17 @@ export function readConfig(env: ComponentEnv): WebPushConfig {
   }
   return config;
 }
+// repository-config:end
 
 // shared-block:begin
+/** Returns `undefined` for an unset value and `value` when it is non-empty, well-formed and equal to its trim; otherwise throws `WEB_PUSH_NOT_CONFIGURED`. */
+export function readSecret(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value === "" || !value.isWellFormed() || value.trim() !== value)
+    throw webPushError("WEB_PUSH_NOT_CONFIGURED");
+  return value;
+}
+
 /** Returns true when the caller requests test mode or `WEB_PUSH_TEST_MODE` is `"true"`; the request can enable test mode and cannot disable it. */
 export function resolveTestMode(requested: boolean | undefined, env: ComponentEnv): boolean {
   return requested === true || env.WEB_PUSH_TEST_MODE === "true";

@@ -7,7 +7,7 @@ Send VAPID-signed, RFC 8291-encrypted push messages from Convex’s Web API runt
 Use Node 24+, `convex` ^1.46.0 and `convex-helpers` ^0.1.128.
 
 ```sh
-pnpm add @operatornest/convex-web-push convex convex-helpers
+pnpm add @operatornest/convex-web-push convex convex-helpers@^0.1.128
 ```
 
 ## Configure
@@ -187,6 +187,8 @@ Vocabulary follows the [W3C Push API](https://www.w3.org/TR/push-api/), [RFC 803
 
 The aggregate groups are application records over the Push API subscription and RFC message-delivery concepts. Notifications describe the package’s displayed-message payload; raw messages use `notifications.sendRaw`.
 
+Idempotency keys are unique per user and test mode. A repeated `notifications.send` or `notifications.sendRaw` with the same key and identical payload, encoding, lifetime, urgency, topic, allowed hosts and callback returns the original notificationId and sends nothing; changed arguments raise `WEB_PUSH_IDEMPOTENCY_CONFLICT`. `notifications.sendBatch` applies the key to each user’s notification: a repeated batch creates a new batch whose results carry the original notificationIds, and the batch callback is not compared. A send that finds no eligible subscription returns null and claims no key. A notification that ends failed releases its key, so a repeated send creates a new notification; partial and delivered notifications keep their key. Only that failure releases a key; callers cannot release one. A key lives as long as its notification row: cleanup deletes terminal notifications after 7 days and unfinished notifications after 35 days.
+
 ### Delivery error kinds
 
 `errorKind` is one of `DELIVERY_ERROR_KINDS`, typed `DeliveryErrorKind` and validated by `deliveryErrorKindValidator`. Kinds produced by a provider response store `providerStatus`.
@@ -268,11 +270,11 @@ Errors are ConvexError values carrying WebPushErrorData: code, one fixed message
 | Code                             | Message                                                                               | When                                                                                              |
 | -------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `WEB_PUSH_NOT_CONFIGURED`        | Component configuration is missing, malformed or changed during a batch.              | Missing required or malformed component env, mismatched VAPID pair or changed batch configuration |
-| `WEB_PUSH_INVALID_ARGUMENT`      | An argument is empty, malformed or outside its bounds.                                | Malformed subscription/payload/topic/cursor/callback handle or out-of-bounds arguments            |
+| `WEB_PUSH_INVALID_ARGUMENT`      | An argument is missing, malformed or out of bounds.                                   | Malformed subscription/payload/topic/cursor/callback handle or out-of-bounds arguments            |
 | `WEB_PUSH_NOT_FOUND`             | The referenced row does not exist for this user and test mode.                        | Referenced row does not exist for the caller and test mode                                        |
 | `WEB_PUSH_IDEMPOTENCY_CONFLICT`  | The idempotency key was reused with different arguments.                              | A repeated send key has changed arguments                                                         |
 | `WEB_PUSH_PROVIDER_ERROR`        | The push service rejected the message.                                                | Push service returned a failing HTTP status                                                       |
-| `WEB_PUSH_NETWORK_ERROR`         | The push service request produced no response.                                        | Push request failed without a response                                                            |
+| `WEB_PUSH_NETWORK_ERROR`         | The request to the push service failed before a response arrived.                     | Push request failed without a response                                                            |
 | `WEB_PUSH_PAYLOAD_TOO_LARGE`     | The plaintext exceeds 3993 bytes or the encoded input exceeds 5324 UTF-16 code units. | Payload exceeds plaintext or encoded bounds                                                       |
 | `WEB_PUSH_CRYPTO_UNSUPPORTED`    | The runtime cannot complete the required WebCrypto operation.                         | Required WebCrypto operation failed                                                               |
 | `WEB_PUSH_UNSUPPORTED`           | Web Push is unavailable in this browser.                                              | Browser lacks Web Push APIs                                                                       |
@@ -292,7 +294,8 @@ For convex-test, import `register` from `@operatornest/convex-web-push/test` and
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | Payload plaintext                    | 3993 bytes                                                                                                        |
 | Encoded payload input                | 5324 UTF-16 code units                                                                                            |
-| User ID, idempotency key             | Nonempty, at most 256 UTF-8 bytes                                                                                 |
+| User ID                              | Nonempty, at most 256 UTF-8 bytes                                                                                 |
+| Idempotency key                      | 1–128 characters from A–Z, a–z, 0–9, `_` and `-`                                                                  |
 | Endpoint                             | At most 4096 UTF-16 code units                                                                                    |
 | Subscription keys                    | Valid P-256 encryption point and 16-byte auth secret                                                              |
 | Subscriptions per user and test mode | 50 active plus paused; recording retires the oldest excess                                                        |
@@ -305,7 +308,7 @@ For convex-test, import `register` from `@operatornest/convex-web-push/test` and
 
 Registration stores canonical base64url keys. Removal deletes 100 earlier-generation rows per transaction and preserves later registrations. A bounded endCursor page can return numItems + 1 rows. Expired batch candidates consume the step budget. Every batch continuation preserves test mode and checks configuration and the public-key fingerprint.
 
-Retries use Retry-After and exponential backoff with jitter. HTTP 408, 429 and 5xx and network failures are retryable. Redirects and other failures are permanent; 404/410 retire only the attempted subscription revision. Sent means push service acceptance or simulated acceptance; it does not prove device display. Retries permit repeated delivery.
+Retries use Retry-After and exponential backoff with jitter. HTTP 408, 429 and 5xx and network failures are retryable. Redirects and other failures are permanent; 404/410 retire only the attempted subscription revision. Sent means push service acceptance or simulated acceptance; it does not prove device display. Retries permit repeated delivery. Each push service response body is read up to 4096 bytes and never stored.
 
 Cleanup retains terminal notifications, deliveries and batches for 7 days, removes unfinished work after 35 days and removes gone subscriptions after 7 days. Delivery deletion and cleanup use bounded continuations. Cleanup never deletes `subscriptionOwners` rows: the table keeps one permanent row per user and test mode, created by the first registration or removal, holding the registration generation counter that lets removal delete only earlier generations.
 

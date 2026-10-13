@@ -1,5 +1,5 @@
 import { vOnCompleteArgs } from "@convex-dev/workpool";
-import { boundedString } from "../shared/bounds.js";
+import { boundedUtf8String } from "../shared/bounds.js";
 import { webPushError } from "../shared/errors.js";
 import { v } from "convex/values";
 import { isSendOutcome, planRetry } from "../shared/classify.js";
@@ -241,7 +241,7 @@ export const list = query({
   },
   returns: v.array(schema.doc("deliveries")),
   handler: async (ctx, { notificationId, userId, testMode }) => {
-    boundedString(userId, 256);
+    boundedUtf8String(userId, 256);
     const notification = await ctx.db.get("notifications", notificationId);
     if (notification?.userId !== userId || notification.testMode !== resolveTestMode(testMode, env))
       throw webPushError("WEB_PUSH_NOT_FOUND");

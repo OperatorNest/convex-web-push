@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { boundedString, truncateText, validateHosts } from "../shared/bounds.js";
+import { boundedString, boundedUtf8String, truncateText, validateHosts } from "../shared/bounds.js";
 import { base64urlEncode, base64urlDecode } from "../shared/base64url.js";
 import { webPushError } from "../shared/errors.js";
 import { checkPushEndpoint } from "../shared/push.js";
@@ -51,7 +51,7 @@ async function liveSubscriptions(
   userId: string,
   testMode: boolean,
 ): Promise<{ active: Doc<"subscriptions">[]; paused: Doc<"subscriptions">[] }> {
-  boundedString(userId, 256);
+  boundedUtf8String(userId, 256);
   const active = await ctx.db
     .query("subscriptions")
     .withIndex("by_userId_and_testMode_and_status", (q) =>
@@ -89,10 +89,10 @@ export const record = mutation({
     const config = readConfig(env);
     const testMode = resolveTestMode(args.testMode, env);
     if (!testMode) requireVapidConfig(config);
-    boundedString(args.userId, 256);
+    boundedUtf8String(args.userId, 256);
     validateHosts(args.allowedPushHosts);
     const { endpoint, keys, expirationTime } = args.subscription;
-    if (endpoint.length > 4096 || !endpoint.isWellFormed()) invalid();
+    boundedString(endpoint, 4096);
     if (expirationTime != null && (!Number.isFinite(expirationTime) || expirationTime < 0))
       invalid();
     const check = checkPushEndpoint(endpoint, args.allowedPushHosts);
@@ -158,8 +158,8 @@ export const remove = mutation({
   returns: v.boolean(),
   handler: async (ctx, { endpoint, userId, testMode: requestedTestMode }) => {
     const testMode = resolveTestMode(requestedTestMode, env);
-    if (endpoint.length === 0 || endpoint.length > 4096 || !endpoint.isWellFormed()) invalid();
-    boundedString(userId, 256);
+    boundedString(endpoint, 4096);
+    boundedUtf8String(userId, 256);
     const existing = await ctx.db
       .query("subscriptions")
       .withIndex("by_endpointHash_and_testMode", (q) =>
@@ -203,7 +203,7 @@ export const removeAll = mutation({
   returns: purgeResultValidator,
   handler: async (ctx, { userId, testMode: requestedTestMode }) => {
     const testMode = resolveTestMode(requestedTestMode, env);
-    boundedString(userId, 256);
+    boundedUtf8String(userId, 256);
     const current = await registrationUser(ctx, userId, testMode);
     const generation = current.generation + 1;
     await ctx.db.patch("subscriptionOwners", current._id, { generation });
@@ -249,7 +249,7 @@ async function moveUserSubscriptions(
   from: "active" | "paused",
   to: "active" | "paused",
 ) {
-  boundedString(userId, 256);
+  boundedUtf8String(userId, 256);
   const rows = await ctx.db
     .query("subscriptions")
     .withIndex("by_userId_and_testMode_and_status", (q) =>

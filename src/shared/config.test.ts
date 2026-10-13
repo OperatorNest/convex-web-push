@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import {
   DEFAULT_MAX_PARALLELISM,
   readConfig,
+  readSecret,
   requireVapidConfig,
   resolveTestMode,
 } from "./config.js";
@@ -72,4 +73,19 @@ test("configuration rejects off-curve public keys and zero private scalars", () 
       }),
     );
   }
+});
+
+test("readSecret keeps unset and exact values and rejects empty, untrimmed or malformed values", async () => {
+  expect(readSecret(undefined)).toBeUndefined();
+  expect(readSecret("key")).toBe("key");
+  for (const value of ["", " key", "key\n", "\ud800"])
+    expect(() => readSecret(value)).toThrowError(
+      expect.objectContaining({
+        data: expect.objectContaining({ code: "WEB_PUSH_NOT_CONFIGURED" }),
+      }),
+    );
+  const keys = await generateVapidKeys();
+  expect(() => readConfig({ WEB_PUSH_VAPID_PRIVATE_KEY: `${keys.privateKey} ` })).toThrowError(
+    expect.objectContaining({ data: expect.objectContaining({ code: "WEB_PUSH_NOT_CONFIGURED" }) }),
+  );
 });

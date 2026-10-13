@@ -1,9 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
-import { runSmoke, smokeEnv, step } from "./smoke-harness.mjs";
+import { assertSmoke, errorCodeOf, runSmoke, smokeEnv, step, waitFor } from "./smoke-harness.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const api = anyApi;
@@ -15,10 +14,6 @@ const VAPID_ENV_NAMES = [
 const BROADCAST_USERS = 80;
 const PER_USER_SUBSCRIPTIONS = 2;
 
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
-}
-
 function canonical(value) {
   return JSON.stringify(value, (_key, v) =>
     v && typeof v === "object" && !Array.isArray(v)
@@ -28,33 +23,28 @@ function canonical(value) {
 }
 
 function assertEqual(actual, expected, what) {
-  assert(
+  assertSmoke(
     canonical(actual) === canonical(expected),
     `${what}: expected ${canonical(expected)}, got ${canonical(actual)}`,
   );
 }
 
-async function waitFor(what, fn, timeoutMs = 90_000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = await fn();
-    if (value) return value;
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
-    await sleep(500);
-  }
-}
+const ADMIN_QUERIES = new Set([
+  "getBatch",
+  "getNotification",
+  "getSubscriptionStatus",
+  "listDeliveries",
+  "listNotificationResults",
+  "listNotifications",
+]);
+const ADMIN_ACTIONS = new Set(["verifyConfig"]);
 
-function callWith(backend) {
-  return async (name, args = {}) => {
-    try {
-      return await backend.runFunction(name, args);
-    } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      const failure = new Error(text.slice(0, 400));
-      const code = /WEB_PUSH_[A-Z_]+/.exec(text)?.[0];
-      if (code) failure.data = { code };
-      throw failure;
-    }
+function callWith(client) {
+  return (name, args = {}) => {
+    const reference = anyApi.admin[name];
+    if (ADMIN_QUERIES.has(name)) return client.query(reference, args);
+    if (ADMIN_ACTIONS.has(name)) return client.action(reference, args);
+    return client.mutation(reference, args);
   };
 }
 
@@ -97,7 +87,7 @@ async function errorCode(promise) {
   try {
     await promise;
   } catch (error) {
-    return error?.data?.code ?? `no code (${String(error?.message).slice(0, 120)})`;
+    return errorCodeOf(error) ?? `no code (${String(error?.message).slice(0, 120)})`;
   }
   return "no error";
 }
@@ -105,14 +95,13 @@ async function errorCode(promise) {
 await runSmoke(async (backend) => {
   const run = crypto.randomUUID().slice(0, 8);
   const user = `smoke-${run}`;
-  const call = callWith(backend);
-  const notification = (args) => call("admin:sendNotification", { userId: user, ...args });
+  const call = callWith(backend.client);
+  const notification = (args) => call("sendNotification", { userId: user, ...args });
   const page = (cursor, numItems) =>
-    call("admin:listNotifications", { userId: user, paginationOpts: { numItems, cursor } });
-  const detail = (notificationId, userId) =>
-    call("admin:getNotification", { notificationId, userId });
+    call("listNotifications", { userId: user, paginationOpts: { numItems, cursor } });
+  const detail = (notificationId, userId) => call("getNotification", { notificationId, userId });
   const settled = (notificationId, userId) =>
-    waitFor(`notification ${notificationId} to settle`, async () => {
+    waitFor(async () => {
       const found = await detail(notificationId, userId);
       return found && ["delivered", "failed"].includes(found.status) ? found : null;
     });
@@ -124,12 +113,12 @@ await runSmoke(async (backend) => {
   await step(
     "config.verify passes every WebCrypto operation and config.get returns the configured key",
     async () => {
-      const report = await waitFor("the env to reach the component", async () => {
-        const result = await call("admin:verifyConfig", {});
+      const report = await waitFor(async () => {
+        const result = await call("verifyConfig", {});
         return result.config.configured && result.testMode ? result : null;
       });
-      assert(report.ok === true, `verifyConfig failed: ${JSON.stringify(report.checks)}`);
-      assert(
+      assertSmoke(report.ok === true, `verifyConfig failed: ${JSON.stringify(report.checks)}`);
+      assertSmoke(
         report.checks.some((c) => c.name === "RFC 8291 Appendix A vector" && c.ok),
         "the RFC 8291 vector check did not pass",
       );
@@ -143,15 +132,13 @@ await runSmoke(async (backend) => {
 
   const subscription = await fakeSubscription();
   await step("recordSubscription stores a subscription and rejects a bad endpoint", async () => {
-    const saved = await call("admin:recordSubscription", {
+    const saved = await call("recordSubscription", {
       userId: user,
       subscription,
     });
-    assert(saved.created === true, "the subscription was not created");
+    assertSmoke(saved.created === true, "the subscription was not created");
     const evil = { ...(await fakeSubscription()), endpoint: "https://evil.example.com/push" };
-    const code = await errorCode(
-      call("admin:recordSubscription", { userId: user, subscription: evil }),
-    );
+    const code = await errorCode(call("recordSubscription", { userId: user, subscription: evil }));
     assertEqual(code, "WEB_PUSH_INVALID_ARGUMENT", "error code for a disallowed endpoint");
   });
 
@@ -162,14 +149,17 @@ await runSmoke(async (backend) => {
       () => "no error",
       (error) => String(error?.message),
     );
-    assert(/Not signed in/.test(message), `expected Not signed in, got ${message.slice(0, 120)}`);
+    assertSmoke(
+      /Not signed in/.test(message),
+      `expected Not signed in, got ${message.slice(0, 120)}`,
+    );
     const save = await client
       .mutation(api.example.recordSubscription, { subscription: await fakeSubscription() })
       .then(
         () => "no error",
         (error) => String(error?.message),
       );
-    assert(/Not signed in/.test(save), `expected Not signed in, got ${save.slice(0, 120)}`);
+    assertSmoke(/Not signed in/.test(save), `expected Not signed in, got ${save.slice(0, 120)}`);
   });
 
   let firstId;
@@ -183,17 +173,20 @@ await runSmoke(async (backend) => {
       urgency: "high",
       topic: "smoke",
     });
-    assert(firstId && secondId && firstId !== secondId, "expected two distinct notification ids");
+    assertSmoke(
+      firstId && secondId && firstId !== secondId,
+      "expected two distinct notification ids",
+    );
     const first = await settled(firstId, user);
     const second = await settled(secondId, user);
-    assert(first.status === "delivered" && first.testMode === true, "first was not delivered");
+    assertSmoke(first.status === "delivered" && first.testMode === true, "first was not delivered");
     assertEqual(
       second.options,
       { ttlSeconds: 600, urgency: "high", topic: "smoke" },
       "second options",
     );
-    const results = await waitFor("both onComplete callbacks", async () => {
-      const rows = await call("admin:listNotificationResults", { userId: user, testMode: true });
+    const results = await waitFor(async () => {
+      const rows = await call("listNotificationResults", { userId: user, testMode: true });
       return rows.length === 2 ? rows : null;
     });
     assertEqual(
@@ -204,7 +197,7 @@ await runSmoke(async (backend) => {
       ],
       "callback results",
     );
-    const deliveries = await call("admin:listDeliveries", {
+    const deliveries = await call("listDeliveries", {
       notificationId: firstId,
       userId: user,
     });
@@ -222,8 +215,8 @@ await runSmoke(async (backend) => {
   await step("the paginator pages notifications newest first", async () => {
     const first = await page(null, 1);
     const second = await page(first.continueCursor, 1);
-    assert(first.page.length === 1 && first.isDone === false, "page 1 should have one row");
-    assert(second.page.length === 1, "page 2 should have one row");
+    assertSmoke(first.page.length === 1 && first.isDone === false, "page 1 should have one row");
+    assertSmoke(second.page.length === 1, "page 2 should have one row");
     assertEqual(
       [first.page[0].notificationId, second.page[0].notificationId],
       [secondId, firstId],
@@ -241,7 +234,7 @@ await runSmoke(async (backend) => {
     }
     assertEqual(await errorCode(page(null, 101)), "WEB_PUSH_INVALID_ARGUMENT", "page size");
     const last = await page(null, 100);
-    const bounded = await call("admin:listNotifications", {
+    const bounded = await call("listNotifications", {
       userId: user,
       paginationOpts: {
         numItems: 1,
@@ -250,13 +243,13 @@ await runSmoke(async (backend) => {
         maximumRowsRead: 10000,
       },
     });
-    assert(bounded.page.length <= 2, "endCursor exceeded the server row budget");
+    assertSmoke(bounded.page.length <= 2, "endCursor exceeded the server row budget");
   });
   await step(
     "registration accepts a Unicode truncation boundary and rejects an invalid point",
     async () => {
       const unicode = await fakeSubscription();
-      await call("admin:recordSubscription", {
+      await call("recordSubscription", {
         userId: user + "-unicode",
         subscription: unicode,
         userAgent: "a".repeat(255) + "😀",
@@ -265,7 +258,7 @@ await runSmoke(async (backend) => {
       point[0] = 4;
       assertEqual(
         await errorCode(
-          call("admin:recordSubscription", {
+          call("recordSubscription", {
             userId: user,
             subscription: {
               ...unicode,
@@ -280,31 +273,34 @@ await runSmoke(async (backend) => {
   );
 
   await step("sendRaw delivers a string and bytes", async () => {
-    const text = await call("admin:sendRawNotification", {
+    const text = await call("sendRawNotification", {
       userId: user,
       payload: "custom:smoke",
     });
-    const bytes = await call("admin:sendRawNotification", {
+    const bytes = await call("sendRawNotification", {
       userId: user,
-      payload: { $bytes: Buffer.from([0, 255, 128, 7]).toString("base64") },
+      payload: new Uint8Array([0, 255, 128, 7]).buffer,
     });
-    assert((await settled(text, user)).payload === "custom:smoke", "string payload changed");
-    assert((await settled(bytes, user)).payload === "AP-ABw", "bytes were not stored as base64url");
+    assertSmoke((await settled(text, user)).payload === "custom:smoke", "string payload changed");
+    assertSmoke(
+      (await settled(bytes, user)).payload === "AP-ABw",
+      "bytes were not stored as base64url",
+    );
   });
 
   await step("pause stops delivery and resume restores it", async () => {
-    assert(
-      (await call("admin:pauseSubscriptions", { userId: user })) === 1,
+    assertSmoke(
+      (await call("pauseSubscriptions", { userId: user })) === 1,
       "pause should affect one subscription",
     );
-    assert(
-      (await call("admin:getSubscriptionStatus", { userId: user })).pausedCount === 1,
+    assertSmoke(
+      (await call("getSubscriptionStatus", { userId: user })).pausedCount === 1,
       "status should show one paused subscription",
     );
-    assert((await notification({ title: "while paused" })) === null, "paused user got a send");
-    assert((await call("admin:resumeSubscriptions", { userId: user })) === 1, "resume failed");
+    assertSmoke((await notification({ title: "while paused" })) === null, "paused user got a send");
+    assertSmoke((await call("resumeSubscriptions", { userId: user })) === 1, "resume failed");
     const id = await notification({ title: "after resume" });
-    assert(
+    assertSmoke(
       id !== null && (await settled(id, user)).status === "delivered",
       "resume did not restore",
     );
@@ -316,32 +312,32 @@ await runSmoke(async (backend) => {
       Array.from({ length: PER_USER_SUBSCRIPTIONS }, () => id),
     );
     await inChunks(recordings, 8, async (userId) =>
-      call("admin:recordSubscription", {
+      call("recordSubscription", {
         userId,
         subscription: await fakeSubscription(),
       }),
     );
-    const first = await call("admin:sendBatch", { userIds: users, title: "News" });
-    assert(first.done === false, "the first call should hit the delivery budget");
-    assert(first.results.length < users.length, "the first call handled every user");
-    const progress = await waitFor("the batch to finish", async () => {
-      const current = await call("admin:getBatch", { batchId: first.batchId });
+    const first = await call("sendBatch", { userIds: users, title: "News" });
+    assertSmoke(first.done === false, "the first call should hit the delivery budget");
+    assertSmoke(first.results.length < users.length, "the first call handled every user");
+    const progress = await waitFor(async () => {
+      const current = await call("getBatch", { batchId: first.batchId });
       return current?.status === "done" ? current : null;
     });
     assertEqual([progress.total, progress.processed], [BROADCAST_USERS, BROADCAST_USERS], "counts");
-    assert(progress.notificationIds.length === BROADCAST_USERS, "a notification is missing");
+    assertSmoke(progress.notificationIds.length === BROADCAST_USERS, "a notification is missing");
 
     const ids = progress.notificationIds;
     const sample = [0, 1, 39, 40, 78, 79].map((i) => ({ id: ids[i], userId: users[i] }));
     await inChunks(sample, 3, async ({ id, userId }) => {
       const done = await settled(id, userId);
-      assert(done.counts.sent === PER_USER_SUBSCRIPTIONS, `${id} was not fully delivered`);
+      assertSmoke(done.counts.sent === PER_USER_SUBSCRIPTIONS, `${id} was not fully delivered`);
     });
   });
 
   await step("a batch over 100 users fails with WEB_PUSH_INVALID_ARGUMENT", async () => {
     const code = await errorCode(
-      call("admin:sendBatch", {
+      call("sendBatch", {
         userIds: Array.from({ length: 101 }, (_, i) => `${user}-x${i}`),
         title: "too many",
       }),
@@ -351,7 +347,7 @@ await runSmoke(async (backend) => {
 
   await step("an invalid TTL fails for a user without subscriptions", async () => {
     const code = await errorCode(
-      call("admin:sendNotification", { userId: `${user}-none`, title: "bad ttl", ttlSeconds: -1 }),
+      call("sendNotification", { userId: `${user}-none`, title: "bad ttl", ttlSeconds: -1 }),
     );
     assertEqual(code, "WEB_PUSH_INVALID_ARGUMENT", "error code");
   });
@@ -370,7 +366,7 @@ await runSmoke(async (backend) => {
       try {
         await backend.runConvexCli(["env", "remove", "WEB_PUSH_TEST_MODE"]);
         await backend.runConvexCli(["env", "remove", "WEB_PUSH_VAPID_PRIVATE_KEY"]);
-        const code = await waitFor("the missing private key", async () => {
+        const code = await waitFor(async () => {
           const result = await errorCode(notification({ title: "unconfigured" }));
           return result === "WEB_PUSH_NOT_CONFIGURED" ? result : null;
         });
@@ -386,8 +382,8 @@ await runSmoke(async (backend) => {
   );
 
   await step("cleanup deletes finished rows past retention", async () => {
-    await waitFor("test mode to come back", async () => {
-      const report = await call("admin:verifyConfig", {});
+    await waitFor(async () => {
+      const report = await call("verifyConfig", {});
       return report.testMode && report.config.configured;
     });
     const eightDays = 8 * 24 * 60 * 60 * 1000;
@@ -396,7 +392,7 @@ await runSmoke(async (backend) => {
       { now: Date.now() + eightDays },
       { component: "webPush" },
     );
-    assert(result.deleted > 0, `cleanup deleted nothing: ${JSON.stringify(result)}`);
+    assertSmoke(result.deleted > 0, `cleanup deleted nothing: ${JSON.stringify(result)}`);
     assertEqual(
       await errorCode(detail(firstId, user)),
       "WEB_PUSH_NOT_FOUND",
@@ -406,10 +402,10 @@ await runSmoke(async (backend) => {
   });
 
   await step("removeAll removes the user's subscriptions", async () => {
-    const removed = await call("admin:removeAll", { userId: user });
+    const removed = await call("removeAll", { userId: user });
     assertEqual(removed, { removed: 1, done: true }, "removeAll");
     assertEqual(
-      (await call("admin:getSubscriptionStatus", { userId: user })).activeCount,
+      (await call("getSubscriptionStatus", { userId: user })).activeCount,
       0,
       "subscriptions left",
     );

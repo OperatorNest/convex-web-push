@@ -1,4 +1,4 @@
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { expectWebPushError, required } from "../test-helpers.js";
 import swSource from "../../sw/convex-web-push-sw.js?raw";
 import {
@@ -131,15 +131,24 @@ test("click navigates an existing window or opens a new one", async () => {
   expect(empty.scope.clients.openWindow).toHaveBeenCalledWith(`${origin}/`);
 });
 
-function loadClassicWorker(scope: object, source = swSource) {
-  // oxlint-disable-next-line typescript/no-implied-eval -- evaluates the shipped classic worker source against a fake scope
-  new Function("self", source)(scope);
+let classicWorkerLoads = 0;
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+async function loadClassicWorker(scope: object, source = swSource) {
+  classicWorkerLoads += 1;
+  vi.stubGlobal("self", scope);
+  await import(
+    `data:text/javascript,${encodeURIComponent(`${source}\nvoid ${classicWorkerLoads};`)}`
+  );
 }
 
 test("the bundled classic pushService worker behaves like the module handlers", async () => {
   const focus = vi.fn(async () => {});
   const { scope, listeners } = makeScope([{ url: `${origin}/inbox`, focus }]);
-  loadClassicWorker(scope);
+  await loadClassicWorker(scope);
 
   const push = pushEvent({
     json: () => ({ title: "Classic", body: "b", url: "/inbox" }),
@@ -173,7 +182,7 @@ test("the bundled classic pushService worker behaves like the module handlers", 
 
 test("the classic worker shows what buildNotification builds for empty and non-object payloads", async () => {
   const { scope, listeners } = makeScope();
-  loadClassicWorker(scope);
+  await loadClassicWorker(scope);
   const payloads = [{ title: "", url: "", icon: "", body: "b" }, { body: "no title" }];
   for (const payload of payloads) {
     const push = pushEvent({ json: () => payload, text: () => "" });
@@ -204,7 +213,7 @@ test("the classic worker applies icon and badge added to its DEFAULTS object", a
     'const DEFAULTS = { title: "Notification", url: "/", icon: "/icon.png", badge: "/badge.png" };',
   );
   expect(edited).not.toBe(swSource);
-  loadClassicWorker(scope, edited);
+  await loadClassicWorker(scope, edited);
   const push = pushEvent({ json: () => ({ body: "b" }), text: () => "" });
   handlerFor(listeners, "push")(push.event);
   await push.settle();
@@ -222,7 +231,7 @@ test("a rejected window navigation opens the click URL in a new window", async (
       throw new TypeError("uncontrolled client");
     });
     const { scope, listeners } = makeScope([{ url: `${origin}/other`, focus, navigate }]);
-    load(scope);
+    await load(scope);
     const click = clickEvent({ url: "/next" });
     handlerFor(listeners, "notificationclick")(click.event);
     await click.settle();
