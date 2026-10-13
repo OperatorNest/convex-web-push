@@ -70,7 +70,7 @@ async function readTextChunks(
   return readTextChunks(reader, decoder, maxBytes, nextByteCount, text + decoded);
 }
 
-/** Reads the body of `message` as UTF-8 text. Returns `undefined`, and stops reading, when `content-length` or the streamed byte count exceeds `maxBytes` or when the bytes are not well-formed UTF-8. A missing body reads as `""`. */
+/** Reads the body of `message` as UTF-8 text. Returns `undefined`, and stops reading, when `content-length` or the streamed byte count exceeds `maxBytes` or when the bytes are not well-formed UTF-8. A leading byte order mark is kept, so the text re-encodes to the received bytes. A missing body reads as `""`. */
 export async function readBoundedText(
   message: Request | Response,
   maxBytes: number,
@@ -82,7 +82,7 @@ export async function readBoundedText(
   if (message.body === null) return "";
   return readTextChunks(
     message.body.getReader(),
-    new TextDecoder("utf-8", { fatal: true }),
+    new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }),
     maxBytes,
     0,
     "",
