@@ -13,7 +13,7 @@ import {
   resolveTestMode,
   type WebPushConfig,
 } from "../shared/config.js";
-import { MAX_PLAINTEXT_BYTES } from "../shared/encrypt.js";
+import { MAX_ENCODED_PAYLOAD_LENGTH, MAX_PLAINTEXT_BYTES } from "../shared/encrypt.js";
 import {
   isWebPushError,
   webPushError,
@@ -54,7 +54,8 @@ function validateSend(args: SendFields, testMode: boolean, config: WebPushConfig
     if (!isMutationHandle(args.onComplete)) throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   }
   validateTtlSeconds(args.ttlSeconds);
-  if (args.payload.length > 5324) throw webPushError("WEB_PUSH_PAYLOAD_TOO_LARGE");
+  if (args.payload.length > MAX_ENCODED_PAYLOAD_LENGTH)
+    throw webPushError("WEB_PUSH_PAYLOAD_TOO_LARGE");
   if (!testMode) requireVapidConfig(config);
   let bytes: number;
   if (args.payloadEncoding === "base64url") {
@@ -74,42 +75,41 @@ function validateSend(args: SendFields, testMode: boolean, config: WebPushConfig
   }
 }
 
-type Enqueued =
-  | { deferred: false; notificationId: Id<"notifications"> | null; cost: number }
-  | { deferred: true };
+async function findReplay(
+  ctx: MutationCtx,
+  userId: string,
+  args: SendFields,
+  testMode: boolean,
+): Promise<Id<"notifications"> | undefined> {
+  if (args.idempotencyKey === undefined) return undefined;
+  const key = args.idempotencyKey;
+  const existing = await ctx.db
+    .query("notifications")
+    .withIndex("by_userId_and_testMode_and_idempotencyKey", (q) =>
+      q.eq("userId", userId).eq("testMode", testMode).eq("idempotencyKey", key),
+    )
+    .first();
+  if (!existing) return undefined;
+  if (
+    existing.payload !== args.payload ||
+    existing.payloadEncoding !== args.payloadEncoding ||
+    existing.options.ttlSeconds !== args.ttlSeconds ||
+    existing.options.urgency !== args.urgency ||
+    existing.options.topic !== args.topic ||
+    JSON.stringify(existing.allowedPushHosts ?? []) !==
+      JSON.stringify(args.allowedPushHosts ?? []) ||
+    existing.onComplete !== args.onComplete
+  )
+    throw webPushError("WEB_PUSH_IDEMPOTENCY_CONFLICT");
+  return existing._id;
+}
 
 async function enqueueForUser(
   ctx: MutationCtx,
   userId: string,
   args: SendFields,
   testMode: boolean,
-  budget: number,
-): Promise<Enqueued> {
-  if (args.idempotencyKey !== undefined) {
-    const key = args.idempotencyKey;
-    const existing = await ctx.db
-      .query("notifications")
-      .withIndex("by_userId_and_testMode_and_idempotencyKey", (q) =>
-        q.eq("userId", userId).eq("testMode", testMode).eq("idempotencyKey", key),
-      )
-      .first();
-    if (existing) {
-      if (
-        existing.payload !== args.payload ||
-        existing.payloadEncoding !== args.payloadEncoding ||
-        existing.options.ttlSeconds !== args.ttlSeconds ||
-        existing.options.urgency !== args.urgency ||
-        existing.options.topic !== args.topic ||
-        JSON.stringify(existing.allowedPushHosts ?? []) !==
-          JSON.stringify(args.allowedPushHosts ?? []) ||
-        existing.onComplete !== args.onComplete
-      )
-        throw webPushError("WEB_PUSH_IDEMPOTENCY_CONFLICT");
-      return { deferred: false, notificationId: existing._id, cost: 0 };
-    }
-  }
-
-  if (budget < MAX_SUBSCRIPTIONS_PER_USER) return { deferred: true };
+): Promise<{ notificationId: Id<"notifications"> | null; cost: number }> {
   const now = Date.now();
   const candidates = await ctx.db
     .query("subscriptions")
@@ -123,8 +123,7 @@ async function enqueueForUser(
       await ctx.db.patch("subscriptions", subscription._id, { status: "gone", updatedAt: now });
     } else subscriptions.push(subscription);
   }
-  if (subscriptions.length === 0)
-    return { deferred: false, notificationId: null, cost: candidates.length };
+  if (subscriptions.length === 0) return { notificationId: null, cost: candidates.length };
 
   const notificationId = await ctx.db.insert("notifications", {
     userId,
@@ -162,7 +161,7 @@ async function enqueueForUser(
       { onComplete: internal.deliveries.onComplete, context: { deliveryId } },
     );
   }
-  return { deferred: false, notificationId, cost: candidates.length };
+  return { notificationId, cost: candidates.length };
 }
 
 export const send = mutation({
@@ -172,8 +171,9 @@ export const send = mutation({
     boundedString(userId, 256);
     const testMode = resolveTestMode(args.testMode, env);
     validateSend(args, testMode, readConfig(env));
-    const result = await enqueueForUser(ctx, userId, args, testMode, BATCH_SUBSCRIPTION_BUDGET);
-    return result.deferred ? null : result.notificationId;
+    const replay = await findReplay(ctx, userId, args, testMode);
+    if (replay !== undefined) return replay;
+    return (await enqueueForUser(ctx, userId, args, testMode)).notificationId;
   },
 });
 
@@ -225,11 +225,16 @@ async function advanceBatch(ctx: MutationCtx, batchId: Id<"batches">): Promise<B
     for (;;) {
       const userId = batch.userIds[index];
       if (userId === undefined) break;
-      const outcome = await enqueueForUser(ctx, userId, batch.send, testMode, remaining);
-      if (outcome.deferred) break;
-      remaining -= outcome.cost;
-      results.push({ userId, notificationId: outcome.notificationId });
-      if (outcome.notificationId) created.push(outcome.notificationId);
+      const replay = await findReplay(ctx, userId, batch.send, testMode);
+      let notificationId: Id<"notifications"> | null;
+      if (replay === undefined) {
+        if (remaining < MAX_SUBSCRIPTIONS_PER_USER) break;
+        const outcome = await enqueueForUser(ctx, userId, batch.send, testMode);
+        remaining -= outcome.cost;
+        notificationId = outcome.notificationId;
+      } else notificationId = replay;
+      results.push({ userId, notificationId });
+      if (notificationId) created.push(notificationId);
       index++;
     }
   } catch (error) {

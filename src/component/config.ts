@@ -33,6 +33,19 @@ function requireCrypto(condition: boolean): asserts condition {
   if (!condition) throw webPushError("WEB_PUSH_CRYPTO_UNSUPPORTED");
 }
 
+async function verifyConfig(testMode: boolean) {
+  try {
+    const parsed = readConfig(env);
+    if (!testMode) requireVapidConfig(parsed);
+    if (parsed.publicKey === undefined || parsed.privateKey === undefined)
+      return { usable: true, configured: false };
+    await importVapidPrivateKey(parsed.publicKey, parsed.privateKey);
+    return { usable: true, configured: parsed.subject !== undefined };
+  } catch {
+    return { usable: false, configured: false };
+  }
+}
+
 export const get = query({
   args: { testMode: v.optional(v.boolean()) },
   returns: v.object({ applicationServerKey: v.union(v.string(), v.null()) }),
@@ -52,15 +65,8 @@ export const verify = action({
     checks: v.array(configCheckValidator),
   }),
   handler: async (_ctx, args) => {
-    const parsed = readConfig(env);
     const testMode = resolveTestMode(args.testMode, env);
-    if (!testMode) requireVapidConfig(parsed);
-    const configured =
-      parsed.publicKey !== undefined &&
-      parsed.privateKey !== undefined &&
-      parsed.subject !== undefined;
-    if (parsed.publicKey !== undefined && parsed.privateKey !== undefined)
-      await importVapidPrivateKey(parsed.publicKey, parsed.privateKey);
+    const verdict = await verifyConfig(testMode);
     const checks = [
       await check("sha256 digest", async () => {
         const digest = await crypto.subtle.digest("SHA-256", utf8Encode("abc"));
@@ -112,9 +118,9 @@ export const verify = action({
       }),
     ];
     return {
-      ok: checks.every((c) => c.ok),
+      ok: verdict.usable && checks.every((c) => c.ok),
       testMode,
-      config: configured
+      config: verdict.configured
         ? { configured: true }
         : { configured: false, problem: webPushError("WEB_PUSH_NOT_CONFIGURED").data.message },
       checks,

@@ -1,5 +1,6 @@
 import { ConvexError } from "convex/values";
 import { expect, test, afterEach, vi } from "vitest";
+import { MAX_ENCODED_PAYLOAD_LENGTH, MAX_PLAINTEXT_BYTES } from "./encrypt.js";
 import { isWebPushError, webPushError, WEB_PUSH_ERROR_CODES } from "./errors.js";
 
 afterEach(() => {
@@ -9,6 +10,12 @@ afterEach(() => {
 
 test("every code is upper snake with the WEB_PUSH_ prefix", () => {
   for (const code of WEB_PUSH_ERROR_CODES) expect(code).toMatch(/^WEB_PUSH_[A-Z]+(_[A-Z]+)*$/);
+});
+
+test("the payload size message states both payload limits", () => {
+  const { message } = webPushError("WEB_PUSH_PAYLOAD_TOO_LARGE").data;
+  expect(message).toContain(`${MAX_PLAINTEXT_BYTES} bytes`);
+  expect(message).toContain(`${MAX_ENCODED_PAYLOAD_LENGTH} UTF-16 code units`);
 });
 
 test("the factory uses a fixed message and an optional HTTP status", () => {

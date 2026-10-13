@@ -146,7 +146,7 @@ export async function decryptAes128gcm(
 }
 
 export const respond = (status: number, headers?: Record<string, string>) => () =>
-  new Response(status === 201 ? null : "push pushService says no", {
+  new Response(status === 201 ? null : "provider response body", {
     status,
     ...(headers !== undefined && { headers }),
   });

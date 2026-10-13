@@ -81,7 +81,7 @@ test("recording, pausing and resuming a subscription updates its stored counts",
   ).not.toBeNull();
 });
 
-test("recordSubscription rejects an invalid subscription with a typed error", async () => {
+test("subscriptions.record rejects an endpoint outside the allowed hosts with a typed error", async () => {
   const t = setup();
   const { subscription } = await makeSubscription("evil.example.com");
   await expectWebPushError(
@@ -90,7 +90,7 @@ test("recordSubscription rejects an invalid subscription with a typed error", as
   );
 });
 
-test("sendNotification sends ttlSeconds, urgency, topic and the serialized notification", async () => {
+test("notifications.send stores ttlSeconds, urgency, topic and the serialized notification", async () => {
   const t = setup();
   await subscribe(t, "u1");
   const id = required(
@@ -111,7 +111,7 @@ test("sendNotification sends ttlSeconds, urgency, topic and the serialized notif
   expect(JSON.parse(notification.payload)).toEqual({ title: "Hi" });
 });
 
-test("getNotification and getDeliveries follow a notification to delivered", async () => {
+test("notifications.get and deliveries.list follow a notification to delivered", async () => {
   const t = setup();
   await subscribe(t, "u1");
   const id = required(
@@ -131,7 +131,7 @@ test("getNotification and getDeliveries follow a notification to delivered", asy
   ).toEqual([{ status: "sent", attempts: 1 }]);
 });
 
-test("getNotificationsForUser pages newest first", async () => {
+test("notifications.list pages newest first", async () => {
   const t = setup();
   await subscribe(t, "u1");
   for (const title of ["one", "two", "three"]) {
@@ -145,7 +145,7 @@ test("getNotificationsForUser pages newest first", async () => {
   expect(second.page.map((n) => JSON.parse(n.payload).title)).toEqual(["one"]);
 });
 
-test("sendRaw sends a string as is and bytes as base64url", async () => {
+test("notifications.sendRaw stores a string as is and bytes as base64url", async () => {
   const t = setup();
   await subscribe(t, "u1");
   const text = required(
@@ -167,7 +167,7 @@ test("sendRaw sends a string as is and bytes as base64url", async () => {
   ).toBe(base64urlEncode(bytes));
 });
 
-test("sendNotificationBatch reports progress through getBatch and continues past the budget", async () => {
+test("notifications.sendBatch reports progress through notifications.getBatch and continues past the budget", async () => {
   const t = setup();
   const userIds = Array.from({ length: 80 }, (_, i) => `u${i}`);
   for (const userId of userIds) {
@@ -182,15 +182,12 @@ test("sendNotificationBatch reports progress through getBatch and continues past
     total: 80,
   });
   await drain(t);
-  const done = required(
-    await t.query(internal.admin.getBatch, { batchId: first.batchId }),
-    "the batch",
-  );
+  const done = await t.query(internal.admin.getBatch, { batchId: first.batchId });
   expect(done).toMatchObject({ status: "done", processed: 80 });
   expect(done.notificationIds).toHaveLength(80);
 });
 
-test("sendNotificationBatch rejects more than 100 users with a typed error", async () => {
+test("notifications.sendBatch rejects more than 100 users with a typed error", async () => {
   const t = setup();
   await expectWebPushError(
     t.mutation(internal.admin.sendBatch, {
@@ -201,7 +198,7 @@ test("sendNotificationBatch rejects more than 100 users with a typed error", asy
   );
 });
 
-test("removeSubscription only removes for the matching user, removeAll clears the rest", async () => {
+test("subscriptions.remove removes only for the matching user and subscriptions.removeAll clears the rest", async () => {
   const t = setup();
   const subscription = await subscribe(t, "alice");
   await subscribe(t, "alice");
@@ -340,7 +337,7 @@ test("isWebPushError is exported for apps and rejects other errors", () => {
   expect(isWebPushError(new Error("WEB_PUSH_NOT_CONFIGURED"))).toBe(false);
 });
 
-test("recordSubscription discards undeclared endpoint policy", async () => {
+test("subscriptions.record discards undeclared endpoint policy", async () => {
   const client = new WebPush(components.webPush);
   const { ctx, stop, lastArgs } = recorder();
   const { subscription } = await makeSubscription();
@@ -348,7 +345,7 @@ test("recordSubscription discards undeclared endpoint policy", async () => {
   await expect(client.subscriptions.record(ctx, args)).rejects.toBe(stop);
   expect(lastArgs()).toMatchObject({ allowedPushHosts: undefined });
 });
-test("sendRaw rejects oversized text and bytes before calling the component", async () => {
+test("notifications.sendRaw rejects oversized text and bytes before calling the component", async () => {
   const client = new WebPush(components.webPush);
   const { ctx } = recorder();
   for (const payload of [

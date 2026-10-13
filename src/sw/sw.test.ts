@@ -131,9 +131,9 @@ test("click navigates an existing window or opens a new one", async () => {
   expect(empty.scope.clients.openWindow).toHaveBeenCalledWith(`${origin}/`);
 });
 
-function loadClassicWorker(scope: object) {
+function loadClassicWorker(scope: object, source = swSource) {
   // oxlint-disable-next-line typescript/no-implied-eval -- evaluates the shipped classic worker source against a fake scope
-  new Function("self", swSource)(scope);
+  new Function("self", source)(scope);
 }
 
 test("the bundled classic pushService worker behaves like the module handlers", async () => {
@@ -169,6 +169,50 @@ test("the bundled classic pushService worker behaves like the module handlers", 
   handlerFor(listeners, "notificationclick")(bad.event);
   await bad.settle();
   expect(scope.clients.openWindow).toHaveBeenCalledWith(`${origin}/`);
+});
+
+test("the classic worker shows what buildNotification builds for empty and non-object payloads", async () => {
+  const { scope, listeners } = makeScope();
+  loadClassicWorker(scope);
+  const payloads = [{ title: "", url: "", icon: "", body: "b" }, { body: "no title" }];
+  for (const payload of payloads) {
+    const push = pushEvent({ json: () => payload, text: () => "" });
+    handlerFor(listeners, "push")(push.event);
+    await push.settle();
+    const built = buildNotification(payload);
+    expect(scope.registration.showNotification).toHaveBeenLastCalledWith(
+      built.title,
+      built.options,
+    );
+  }
+  const quoted = pushEvent({ json: () => "quoted", text: () => '"quoted"' });
+  handlerFor(listeners, "push")(quoted.event);
+  await quoted.settle();
+  const built = buildNotification({ body: '"quoted"' });
+  expect(scope.registration.showNotification).toHaveBeenLastCalledWith(built.title, built.options);
+
+  const click = clickEvent({ url: "" });
+  handlerFor(listeners, "notificationclick")(click.event);
+  await click.settle();
+  expect(scope.clients.openWindow).toHaveBeenLastCalledWith(resolveClickUrl({ url: "" }, origin));
+});
+
+test("the classic worker applies icon and badge added to its DEFAULTS object", async () => {
+  const { scope, listeners } = makeScope();
+  const edited = swSource.replace(
+    'const DEFAULTS = { title: "Notification", url: "/" };',
+    'const DEFAULTS = { title: "Notification", url: "/", icon: "/icon.png", badge: "/badge.png" };',
+  );
+  expect(edited).not.toBe(swSource);
+  loadClassicWorker(scope, edited);
+  const push = pushEvent({ json: () => ({ body: "b" }), text: () => "" });
+  handlerFor(listeners, "push")(push.event);
+  await push.settle();
+  const built = buildNotification(
+    { body: "b" },
+    { defaultIcon: "/icon.png", defaultBadge: "/badge.png" },
+  );
+  expect(scope.registration.showNotification).toHaveBeenLastCalledWith(built.title, built.options);
 });
 
 test("a rejected window navigation opens the click URL in a new window", async () => {

@@ -12,7 +12,29 @@ function hasDoc(node) {
   return ts.getJSDocCommentsAndTags(node).length > 0;
 }
 
-function sourceRules(source, filename) {
+function declarationNames(statement) {
+  if (ts.isVariableStatement(statement))
+    return statement.declarationList.declarations.map((declaration) => declaration.name.getText());
+  return statement.name ? [statement.name.text] : [];
+}
+
+function collectReexportedNames(source, filename, reexported) {
+  const file = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
+  for (const statement of file.statements) {
+    if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier) continue;
+    const specifier = statement.moduleSpecifier.text;
+    if (!specifier.startsWith(".")) continue;
+    const target = path.join(path.dirname(filename), specifier.replace(/\.js$/, ".ts"));
+    const names = reexported.get(target) ?? new Set();
+    if (statement.exportClause && ts.isNamedExports(statement.exportClause))
+      for (const element of statement.exportClause.elements)
+        names.add((element.propertyName ?? element.name).text);
+    else names.add("*");
+    reexported.set(target, names);
+  }
+}
+
+function sourceRules(source, filename, reexportedNames = new Set()) {
   const file = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
   const violations = [];
   const reported = new Set();
@@ -165,6 +187,17 @@ function sourceRules(source, filename) {
       }
     }
   }
+  for (const statement of file.statements) {
+    if (!hasModifier(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    const isPublic = declarationNames(statement).some(
+      (name) => reexportedNames.has(name) || reexportedNames.has("*"),
+    );
+    const declaration = ts.isVariableStatement(statement)
+      ? statement.declarationList.declarations[0]
+      : statement;
+    if (isPublic && !hasDoc(declaration))
+      report(statement, "re-exported public export needs TSDoc");
+  }
   return violations;
 }
 
@@ -177,9 +210,17 @@ for (const root of ["src", "example"]) {
     if (root !== "example" || error.code !== "ENOENT") throw error;
   }
 }
+const sources = new Map();
+const reexported = new Map();
+for (const filename of files.toSorted((left, right) => left.localeCompare(right))) {
+  const source = await readFile(filename, "utf8");
+  sources.set(filename, source);
+  if (/^src\/(client|browser|sw)\//.test(filename))
+    collectReexportedNames(source, filename, reexported);
+}
 const violations = [];
-for (const filename of files.toSorted((left, right) => left.localeCompare(right)))
-  violations.push(...sourceRules(await readFile(filename, "utf8"), filename));
+for (const [filename, source] of sources)
+  violations.push(...sourceRules(source, filename, reexported.get(filename)));
 if (violations.length) {
   console.error(violations.join("\n"));
   process.exitCode = 1;

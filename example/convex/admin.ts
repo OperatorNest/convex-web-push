@@ -132,16 +132,13 @@ export const sendBatch = internalMutation({
 
 export const getBatch = internalQuery({
   args: { batchId: v.string() },
-  returns: v.union(
-    v.object({
-      status: v.union(v.literal("running"), v.literal("done"), v.literal("failed")),
-      errorCode: webPushBatchCompleteArgsValidator.fields.errorCode,
-      total: v.number(),
-      processed: v.number(),
-      notificationIds: v.array(v.string()),
-    }),
-    v.null(),
-  ),
+  returns: v.object({
+    status: v.union(v.literal("running"), v.literal("done"), v.literal("failed")),
+    errorCode: webPushBatchCompleteArgsValidator.fields.errorCode,
+    total: v.number(),
+    processed: v.number(),
+    notificationIds: v.array(v.string()),
+  }),
   handler: (ctx, args) => webPush.notifications.getBatch(ctx, args),
 });
 

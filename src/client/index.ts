@@ -137,7 +137,7 @@ export class WebPush {
       });
     },
 
-    /** Read the user’s active and paused subscription counts. */
+    /** Read the user’s active and paused subscription counts; active means recorded and not paused, so a subscription past its `expirationTime` counts as active until the next send marks it gone. */
     getStatus: (ctx: QueryContext, args: { userId: string }) => {
       return ctx.runQuery(this.component.subscriptions.getStatus, {
         testMode: this.options.testMode,
@@ -300,7 +300,7 @@ export class WebPush {
       return ctx.runQuery(this.component.config.get, { testMode: this.options.testMode });
     },
 
-    /** Verify WebCrypto operations and the configured VAPID key pair without sending. */
+    /** Verify WebCrypto operations and the configured VAPID key pair without sending; a configuration problem returns `ok: false` with `config.problem` and never throws. */
     verify: (ctx: ActionContext) => {
       return ctx.runAction(this.component.config.verify, { testMode: this.options.testMode });
     },

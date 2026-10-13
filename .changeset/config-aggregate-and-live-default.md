@@ -2,11 +2,12 @@
 "@operatornest/convex-web-push": minor
 ---
 
-- Breaking: add a config group; config.get(ctx) returns { applicationServerKey } and config.verify(ctx) verifies WebCrypto and the configured VAPID key pair without sending.
+- Breaking: add a config group; config.get(ctx) returns { applicationServerKey } and config.verify(ctx) verifies WebCrypto and the configured VAPID key pair without sending; a missing, malformed or mismatched VAPID configuration returns ok: false with config.problem instead of throwing.
 - Breaking: client methods without argument fields take only ctx.
 - Breaking: subscriptions.getStatus returns activeCount, pausedCount and lastSuccessAt.
 - Breaking: an unset test-mode decision means live; a live operation without VAPID configuration raises WEB_PUSH_NOT_CONFIGURED.
 - Breaking: errorKind is the closed union DELIVERY_ERROR_KINDS, exported with deliveryErrorKindValidator and DeliveryErrorKind; malformed subscription keys record invalid_subscription_keys.
+- Breaking: upgrading a 0.2.0 deployment fails the schema push until the component's 0.2.0 rows are deleted; among them, deliveries with errorKind crypto_error or invalid_subscription are rejected by the closed errorKind union. No migration is provided.
 - Breaking: every entry point names the serialized subscription PushSubscriptionJSON, validated by the exported pushSubscriptionValidator.
 - Breaking: the browser permission union is PushPermission, returned by getPushPermission, and the registration selector is ServiceWorkerScopeOptions; the service worker parses payloads as Partial<PushNotification>.
 - Breaking: generate-keys requires --subject and rejects example.com, example.net and example.org subjects.
@@ -21,3 +22,6 @@
 - Read component configuration once per sendBatch call.
 - Open the click destination in a new window when the service worker cannot navigate an existing window or navigation is rejected.
 - Document every public browser and service worker export.
+- The copied service worker keeps empty-string payload titles and URLs, parses non-object JSON as a text body, resolves click URLs like registerPushHandlers and takes icon and badge defaults from its DEFAULTS object.
+- The example getBatch returns no null; notifications.getBatch raises WEB_PUSH_NOT_FOUND for a missing batch.
+- Document that subscriptions.getStatus counts recorded, unpaused subscriptions as active regardless of expirationTime, and that subscriptionOwners keeps one permanent row per user and test mode.

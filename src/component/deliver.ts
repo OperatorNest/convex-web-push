@@ -17,7 +17,7 @@ export const run = internalAction({
     let config;
     try {
       const parsed = readConfig(env);
-      if (job.testMode === true) return { kind: "sent" };
+      if (job.testMode) return { kind: "sent" };
       config = requireVapidConfig(parsed);
     } catch {
       return {

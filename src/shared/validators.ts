@@ -52,6 +52,7 @@ export const batchStatusValidator = v.union(
   v.literal("failed"),
 );
 
+/** Validates the result that a batch completion callback receives. */
 export const webPushBatchCompleteArgsValidator = v.object({
   testMode: v.boolean(),
   batchId: v.string(),
@@ -69,12 +70,14 @@ export const countsValidator = v.object({
   gone: v.number(),
 });
 
+/** Validates a browser `PushSubscription.toJSON()` result with `endpoint` and `keys` required. */
 export const pushSubscriptionValidator = v.object({
   endpoint: v.string(),
   expirationTime: v.optional(v.union(v.number(), v.null())),
   keys: v.object({ p256dh: v.string(), auth: v.string() }),
 });
 
+/** Validates the result that a notification completion callback receives. */
 export const webPushNotificationCompleteArgsValidator = v.object({
   testMode: v.boolean(),
   notificationId: v.string(),
@@ -97,6 +100,7 @@ export const sendFieldsValidator = v.object({
   allowedPushHosts: v.optional(v.array(v.string())),
 });
 
+/** Every closed error kind stored on a failed or gone delivery and its notification. */
 export const DELIVERY_ERROR_KINDS = [
   "delivery_closed",
   "notification_missing",
@@ -126,6 +130,7 @@ export const DELIVERY_ERROR_KINDS = [
   "max_attempts",
 ] as const;
 
+/** Validates one of the `DELIVERY_ERROR_KINDS`. */
 export const deliveryErrorKindValidator = v.union(
   ...DELIVERY_ERROR_KINDS.map((kind) => v.literal(kind)),
 );
@@ -152,7 +157,7 @@ export type PushService = Infer<typeof pushServiceValidator>;
 export type SendOutcome = Infer<typeof sendOutcomeValidator>;
 /** Send fields contain the encoded payload and delivery arguments. */
 export type SendFields = Infer<typeof sendFieldsValidator>;
-/** A serialized push subscription contains the endpoint, expiration time and encryption keys. */
+/** A serialized push subscription is the DOM `PushSubscriptionJSON` with `endpoint` and `keys` required. */
 export type PushSubscriptionJSON = Infer<typeof pushSubscriptionValidator>;
 /** A delivery error kind names why a delivery attempt did not reach the sent status. */
 export type DeliveryErrorKind = Infer<typeof deliveryErrorKindValidator>;

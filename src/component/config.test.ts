@@ -58,31 +58,55 @@ test("config verify accepts a matching configured key pair without returning it"
   expect(JSON.stringify(report)).not.toContain(keys.privateKey);
 });
 
-test("config verify raises NOT_CONFIGURED for a mismatched key pair without echoing keys", async () => {
+const CONFIGURATION_PROBLEM = {
+  ok: false,
+  config: { configured: false, problem: NOT_CONFIGURED_MESSAGE },
+};
+
+test("config verify reports a mismatched key pair as a problem without echoing keys", async () => {
   const a = await generateVapidKeys();
   const b = await generateVapidKeys();
   vi.stubEnv("WEB_PUSH_VAPID_PUBLIC_KEY", a.publicKey);
   vi.stubEnv("WEB_PUSH_VAPID_PRIVATE_KEY", b.privateKey);
   vi.stubEnv("WEB_PUSH_VAPID_SUBJECT", "mailto:ops@acme.dev");
   const t = setupSimulatedTest();
-  const error: unknown = await t.action(api.config.verify, {}).catch((caught: unknown) => caught);
-  expect(error).toMatchObject({
-    data: { code: "WEB_PUSH_NOT_CONFIGURED", message: NOT_CONFIGURED_MESSAGE },
-  });
-  expect(JSON.stringify(error)).not.toContain(b.privateKey);
+  const report = await t.action(api.config.verify, {});
+  expect(report).toMatchObject({ ...CONFIGURATION_PROBLEM, testMode: true });
+  expect(report.checks.every((c) => c.ok)).toBe(true);
+  expect(JSON.stringify(report)).not.toContain(b.privateKey);
 });
 
-test("config verify rejects malformed configuration without returning keys", async () => {
+test("config verify reports a malformed subject as a problem without returning keys", async () => {
   const keys = await generateVapidKeys();
   vi.stubEnv("WEB_PUSH_VAPID_PUBLIC_KEY", keys.publicKey);
   vi.stubEnv("WEB_PUSH_VAPID_PRIVATE_KEY", keys.privateKey);
   vi.stubEnv("WEB_PUSH_VAPID_SUBJECT", "https://localhost");
   const t = setupSimulatedTest();
-  const error: unknown = await t.action(api.config.verify, {}).catch((caught: unknown) => caught);
-  expect(error).toMatchObject({
-    data: { code: "WEB_PUSH_NOT_CONFIGURED", message: NOT_CONFIGURED_MESSAGE },
+  const report = await t.action(api.config.verify, {});
+  expect(report).toMatchObject(CONFIGURATION_PROBLEM);
+  expect(JSON.stringify(report)).not.toContain(keys.privateKey);
+});
+
+test("config verify reports a malformed private key as a problem in live mode", async () => {
+  const keys = await generateVapidKeys();
+  vi.stubEnv("WEB_PUSH_VAPID_PUBLIC_KEY", keys.publicKey);
+  vi.stubEnv("WEB_PUSH_VAPID_PRIVATE_KEY", "not-a-key");
+  vi.stubEnv("WEB_PUSH_VAPID_SUBJECT", "mailto:ops@acme.dev");
+  const t = setupLiveTest();
+  expect(await t.action(api.config.verify, {})).toMatchObject({
+    ...CONFIGURATION_PROBLEM,
+    testMode: false,
   });
-  expect(JSON.stringify(error)).not.toContain(keys.privateKey);
+});
+
+test("config verify reports missing VAPID keys as a problem in live mode", async () => {
+  vi.stubEnv("WEB_PUSH_VAPID_PUBLIC_KEY", undefined);
+  vi.stubEnv("WEB_PUSH_VAPID_PRIVATE_KEY", undefined);
+  vi.stubEnv("WEB_PUSH_VAPID_SUBJECT", "mailto:ops@acme.dev");
+  const t = setupLiveTest();
+  const report = await t.action(api.config.verify, {});
+  expect(report).toMatchObject({ ...CONFIGURATION_PROBLEM, testMode: false });
+  expect(report.checks.every((c) => c.ok)).toBe(true);
 });
 
 test("config verify reports a failed check with the package error message it raised", async () => {

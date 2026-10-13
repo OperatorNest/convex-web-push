@@ -4,7 +4,7 @@ Send VAPID-signed, RFC 8291-encrypted push messages from Convex’s Web API runt
 
 ## Install
 
-Use Node 24+, `convex` ^1.46.0 and `convex-helpers` ^0.1.127.
+Use Node 24+, `convex` ^1.46.0 and `convex-helpers` ^0.1.128.
 
 ```sh
 pnpm add @operatornest/convex-web-push convex convex-helpers
@@ -170,7 +170,7 @@ Vocabulary follows the [W3C Push API](https://www.w3.org/TR/push-api/), [RFC 803
 | WebPushBatchCompleteArgs                                       | batchId, testMode, terminal status, total, processed, notificationIds and optional errorCode                                                                                                                                          |
 | counts                                                         | queued, sent, failed and gone delivery totals                                                                                                                                                                                         |
 | active, paused, gone                                           | Subscription states: recording activates, pause pauses, resume activates; expiry, provider 404/410, key rotation or cap retirement makes it gone                                                                                      |
-| activeCount, pausedCount                                       | Numbers of active and paused subscriptions returned by subscriptions.getStatus                                                                                                                                                        |
+| activeCount, pausedCount                                       | Numbers of active and paused subscriptions returned by subscriptions.getStatus; active means recorded and not paused, so a subscription past its expirationTime counts as active until the next send marks it gone                    |
 | queued, partial, delivered, failed                             | Notification states: send queues; a settled subset makes it partial; no queued attempts and at least one sent makes it delivered; no sent attempts makes it failed                                                                    |
 | queued, sending, retry, sent, failed, gone                     | Delivery states: enqueue queues; an eligible attempt sends; retryable failure schedules retry; provider acceptance makes it sent; permanent failure makes it failed; unavailable subscription makes it gone                           |
 | running, done, failed                                          | Batch states: enqueueing starts running; all users processed makes it done; a package error in a continuation step, such as changed configuration or an idempotency conflict, makes it failed after saving the users already enqueued |
@@ -229,7 +229,7 @@ import { registerPushHandlers } from "@operatornest/convex-web-push/sw";
 registerPushHandlers(self, { defaultIcon: "/icon-192.png", defaultUrl: "/" });
 ```
 
-Defaults are title `Notification`, URL `/`, with icon and badge unset. Push events display notifications. Clicks focus a window already showing the destination; otherwise they navigate an open window and focus it, or open a new window when no window exists, the window cannot navigate or navigation is rejected. The shown notification’s `data` is `{ url, extra }`. Destinations must share the worker’s origin; external fallbacks resolve to `/`.
+Defaults are title `Notification`, URL `/`, with icon and badge unset. The copied worker and `registerPushHandlers` display and route notifications identically; an empty-string title or URL in the payload is kept, not replaced. To set defaults in the copied worker, edit its `DEFAULTS` object, which accepts `title`, `icon`, `badge` and `url`. Push events display notifications. Clicks focus a window already showing the destination; otherwise they navigate an open window and focus it, or open a new window when no window exists, the window cannot navigate or navigation is rejected. The shown notification’s `data` is `{ url, extra }`. Destinations must share the worker’s origin; external fallbacks resolve to `/`.
 
 `subscribe` requests permission, waits up to 10 seconds for worker activation and replaces a subscription when its application server key changes. Browser exports also include `isSupported`, `getPushPermission`, `getSubscription`, `unsubscribe`, `urlBase64ToUint8Array` and the types `PushSubscriptionJSON`, `PushPermission`, `ServiceWorkerScopeOptions` and `SubscribeOptions`. Existing-subscription helpers use the registration covering the page unless a registration or path is supplied. `unsubscribe` returns the removed endpoint so the app can remove the stored row.
 
@@ -284,7 +284,7 @@ Errors are ConvexError values carrying WebPushErrorData: code, one fixed message
 
 Use `new WebPush(component, { testMode: true })` or `WEB_PUSH_TEST_MODE=true` to simulate acceptance; with neither, operations are live. Every affected row stores the resolved boolean; simulated deliveries omit providerStatus and make no push request. Live deliveries store false. Subscription and history indexes isolate user and test mode.
 
-For convex-test, import `register` from `@operatornest/convex-web-push/test` and call it after `convexTest(schema, modules)`. Use fake timers and `t.finishAllScheduledFunctions(vi.runAllTimers)` to settle work. `config.verify` raises `WEB_PUSH_NOT_CONFIGURED` for malformed configuration, a live call without configuration or a configured mismatched key pair, then checks SHA-256, ECDH, the RFC 8291 vector and VAPID sign/verify. Configuration problems and check errors contain fixed messages.
+For convex-test, import `register` from `@operatornest/convex-web-push/test` and call it after `convexTest(schema, modules)`. Use fake timers and `t.finishAllScheduledFunctions(vi.runAllTimers)` to settle work. `config.verify` never throws for a configuration problem: malformed configuration, a live call without configuration or a configured mismatched key pair returns `ok: false` with `config.configured: false` and the `WEB_PUSH_NOT_CONFIGURED` message in `config.problem`. It also checks SHA-256, ECDH, the RFC 8291 vector and VAPID sign/verify. Test mode without configuration returns `ok: true` with `config.configured: false`. Configuration problems and check errors contain fixed messages.
 
 ## Limits and retention
 
@@ -307,7 +307,7 @@ Registration stores canonical base64url keys. Removal deletes 100 earlier-genera
 
 Retries use Retry-After and exponential backoff with jitter. HTTP 408, 429 and 5xx and network failures are retryable. Redirects and other failures are permanent; 404/410 retire only the attempted subscription revision. Sent means push service acceptance or simulated acceptance; it does not prove device display. Retries permit repeated delivery.
 
-Cleanup retains terminal notifications, deliveries and batches for 7 days, removes unfinished work after 35 days and removes gone subscriptions after 7 days. Delivery deletion and cleanup use bounded continuations.
+Cleanup retains terminal notifications, deliveries and batches for 7 days, removes unfinished work after 35 days and removes gone subscriptions after 7 days. Delivery deletion and cleanup use bounded continuations. Cleanup never deletes `subscriptionOwners` rows: the table keeps one permanent row per user and test mode, created by the first registration or removal, holding the registration generation counter that lets removal delete only earlier generations.
 
 ## Security
 

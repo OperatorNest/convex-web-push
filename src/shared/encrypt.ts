@@ -1,7 +1,10 @@
 import { concatBytes, base64urlEncode, utf8Encode } from "./base64url.js";
 import { webPushError } from "./errors.js";
 
+/** Largest decoded payload in bytes that fits one aes128gcm record of 4096 bytes. */
 export const MAX_PLAINTEXT_BYTES = 3993;
+/** Largest encoded payload input in UTF-16 code units, checked before decoding. */
+export const MAX_ENCODED_PAYLOAD_LENGTH = 5324;
 const RECORD_SIZE = 4096;
 const HEADER_BYTES = 86;
 

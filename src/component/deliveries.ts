@@ -29,7 +29,7 @@ const beginResultValidator = v.union(
     ttlSeconds: v.number(),
     urgency: urgencyValidator,
     topic: v.optional(v.string()),
-    testMode: v.optional(v.boolean()),
+    testMode: v.boolean(),
     allowedPushHosts: v.optional(v.array(v.string())),
   }),
 );
@@ -81,7 +81,7 @@ export const begin = internalMutation({
       ...(notification.payloadEncoding !== undefined && {
         payloadEncoding: notification.payloadEncoding,
       }),
-      ...(notification.testMode !== undefined && { testMode: notification.testMode }),
+      testMode: notification.testMode,
       ...(notification.allowedPushHosts !== undefined && {
         allowedPushHosts: notification.allowedPushHosts,
       }),

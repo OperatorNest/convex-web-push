@@ -2,6 +2,7 @@ import { ConvexError } from "convex/values";
 import { truncateText } from "./bounds.js";
 
 // repository-codes:begin
+/** Every error code that package functions raise in `ConvexError` data. */
 export const WEB_PUSH_ERROR_CODES = [
   "WEB_PUSH_NOT_CONFIGURED",
   "WEB_PUSH_INVALID_ARGUMENT",

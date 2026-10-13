@@ -1814,3 +1814,58 @@ test("a sendBatch whose first step hits an idempotency conflict throws and store
   expect(await t.run((ctx) => ctx.db.query("batches").take(10))).toHaveLength(0);
   expect(await t.run((ctx) => ctx.db.query("notifications").take(10))).toHaveLength(1);
 });
+
+test("an idempotency key reused across send and sendBatch compares the notification callback and never the batch callback", async () => {
+  const t = setupSimulatedTest();
+  await subscribe(t, "a");
+  await subscribe(t, "b");
+  const fields = { ttlSeconds: 86400, urgency: "normal" as const, payload: "digest" };
+  const batch = await t.mutation(api.notifications.sendBatch, {
+    ...fields,
+    userIds: ["a"],
+    idempotencyKey: "digest-1",
+    onComplete: "function://;results:onBatchComplete",
+  });
+  const batchNotificationId = required(
+    batch.results[0]?.notificationId,
+    "the batch notification id",
+  );
+  expect(
+    await t.mutation(api.notifications.send, {
+      ...fields,
+      userId: "a",
+      idempotencyKey: "digest-1",
+    }),
+  ).toBe(batchNotificationId);
+  const repeated = await t.mutation(api.notifications.sendBatch, {
+    ...fields,
+    userIds: ["a"],
+    idempotencyKey: "digest-1",
+    onComplete: "function://;results:onBatchComplete",
+  });
+  expect(repeated.results).toEqual([{ userId: "a", notificationId: batchNotificationId }]);
+  await expectWebPushError(
+    t.mutation(api.notifications.send, {
+      ...fields,
+      userId: "a",
+      idempotencyKey: "digest-1",
+      onComplete: "function://;results:onNotificationComplete",
+    }),
+    "WEB_PUSH_IDEMPOTENCY_CONFLICT",
+  );
+  await t.mutation(api.notifications.send, {
+    ...fields,
+    userId: "b",
+    idempotencyKey: "digest-1",
+    onComplete: "function://;results:onNotificationComplete",
+  });
+  await expectWebPushError(
+    t.mutation(api.notifications.sendBatch, {
+      ...fields,
+      userIds: ["b"],
+      idempotencyKey: "digest-1",
+      onComplete: "function://;results:onBatchComplete",
+    }),
+    "WEB_PUSH_IDEMPOTENCY_CONFLICT",
+  );
+});
