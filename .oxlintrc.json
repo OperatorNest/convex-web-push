@@ -6,12 +6,22 @@
     "perf": "error"
   },
   "plugins": ["oxc", "typescript", "unicorn", "import", "promise"],
-  "jsPlugins": [{ "name": "@convex-dev", "specifier": "@convex-dev/eslint-plugin" }],
+  "jsPlugins": [
+    {
+      "name": "@convex-dev",
+      "specifier": "@convex-dev/eslint-plugin"
+    }
+  ],
   "ignorePatterns": ["dist/**", "**/_generated/**", "node_modules/**", ".convex/**", "coverage/**"],
   "rules": {
     "typescript/no-floating-promises": "error",
     "typescript/no-misused-promises": "error",
-    "no-underscore-dangle": ["error", { "allow": ["_id", "_creationTime"] }]
+    "no-underscore-dangle": [
+      "error",
+      {
+        "allow": ["_id", "_creationTime"]
+      }
+    ]
   },
   "overrides": [
     {
@@ -22,14 +32,23 @@
           "error",
           {
             "patterns": [
-              { "group": ["node:*"], "message": "Shipped code must run without Node.js APIs." }
+              {
+                "group": ["node:*"],
+                "message": "Shipped code must run without Node.js APIs."
+              }
             ]
           }
         ],
         "no-restricted-globals": [
           "error",
-          { "name": "Buffer", "message": "Use Uint8Array and Web APIs." },
-          { "name": "process", "message": "Read configuration through the generated env." }
+          {
+            "name": "Buffer",
+            "message": "Use Uint8Array and Web APIs."
+          },
+          {
+            "name": "process",
+            "message": "Read configuration through the generated env."
+          }
         ]
       }
     },
@@ -43,12 +62,22 @@
         "@convex-dev/no-top-of-hour-crons": "error",
         "@convex-dev/no-schema-import-cycle": "error",
         "@convex-dev/no-duplicate-indexes": "error",
-        "@convex-dev/no-process-env": "error"
+        "@convex-dev/no-process-env": "error",
+        "@convex-dev/import-wrong-runtime": "error",
+        "@convex-dev/no-collect-in-query": "error"
+      }
+    },
+    {
+      "files": ["example/convex/**/*.ts"],
+      "rules": {
+        "@convex-dev/require-access-control": "error"
       }
     },
     {
       "files": ["src/component/**/*.ts", "**/*.test.ts", "scripts/**/*.mjs"],
-      "rules": { "no-await-in-loop": "off" }
+      "rules": {
+        "no-await-in-loop": "off"
+      }
     },
     {
       "files": ["**/*.test.ts", "src/test-helpers.ts", "example/**/*.ts"],

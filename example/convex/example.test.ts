@@ -54,7 +54,7 @@ test("record, notify and the onComplete callback work through the client", async
   });
   expect(page.page[0]).toMatchObject({ status: "delivered", counts: { sent: 1 } });
 
-  const results = await t.run((ctx) => ctx.db.query("notificationResults").collect());
+  const results = await t.run((ctx) => ctx.db.query("notificationResults").take(10000));
   expect(results).toEqual([
     expect.objectContaining({
       notificationId: id,
@@ -105,7 +105,7 @@ test("without opt-in, notify fails with a typed configuration error", async () =
   );
   expect(isWebPushError(error)).toBe(true);
   if (isWebPushError(error)) expect(error.data.code).toBe("WEB_PUSH_NOT_CONFIGURED");
-  expect(await t.query(api.example.publicKey, {})).toBeNull();
+  expect(await t.withIdentity({ subject: "reader" }).query(api.example.publicKey, {})).toBeNull();
 });
 
 test("a client created with testMode: true records without env opt-in", async () => {
@@ -136,7 +136,6 @@ test("public functions need a signed-in user and only act on that user", async (
   expect(await alice.query(api.example.myStatus, {})).toMatchObject({ subscriptions: 1 });
   expect(await bob.query(api.example.myStatus, {})).toMatchObject({ subscriptions: 0 });
 
-  // Bob cannot remove Alice's subscription even with her endpoint.
   expect(
     await bob.mutation(api.example.removeSubscription, { endpoint: subscription.endpoint }),
   ).toBe(false);
@@ -145,6 +144,13 @@ test("public functions need a signed-in user and only act on that user", async (
   expect(await alice.mutation(api.example.resumeMine, {})).toBe(1);
   const id = await alice.mutation(api.example.notifyMe, { title: "to me" });
   expect(id).not.toBeNull();
+  const notificationId = id ?? "missing";
+  expect(await bob.query(api.example.myNotification, { notificationId })).toBeNull();
+  expect(await bob.query(api.example.myDeliveries, { notificationId })).toEqual([]);
+  expect(await alice.query(api.example.myNotification, { notificationId })).toMatchObject({
+    status: "queued",
+  });
+  expect(await alice.query(api.example.myDeliveries, { notificationId })).toHaveLength(1);
   await t.finishAllScheduledFunctions(vi.runAllTimers);
   const mine = await alice.query(api.example.myNotifications, {
     paginationOpts: { numItems: 5, cursor: null },
@@ -160,12 +166,30 @@ test("public functions need a signed-in user and only act on that user", async (
 });
 
 test("sending to other users or broadcasting is not part of the public API", () => {
-  // The public `api` has no `admin` module or `notify`/`broadcast`: these lines fail to compile
-  // if one of them is ever made public.
   // @ts-expect-error -- admin functions are internal
   expect(api.admin).toBeDefined();
   // @ts-expect-error -- notify (any userId) is internal
   expect(api.example.notify).toBeDefined();
   // @ts-expect-error -- broadcast is internal
   expect(api.example.broadcast).toBeDefined();
+});
+
+test("equal subjects from different issuers own different subscriptions", async () => {
+  const t = setup();
+  const { subscription } = await makeSubscription();
+  const alice = t.withIdentity({
+    subject: "123",
+    issuer: "https://a.example.com",
+    tokenIdentifier: "https://a.example.com|123",
+  });
+  const bob = t.withIdentity({
+    subject: "123",
+    issuer: "https://b.example.com",
+    tokenIdentifier: "https://b.example.com|123",
+  });
+  await alice.mutation(api.example.saveSubscription, { subscription });
+  expect(await bob.query(api.example.myStatus, {})).toMatchObject({ subscriptions: 0 });
+  expect(
+    await bob.mutation(api.example.removeSubscription, { endpoint: subscription.endpoint }),
+  ).toBe(false);
 });

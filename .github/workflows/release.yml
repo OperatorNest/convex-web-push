@@ -29,7 +29,7 @@ jobs:
           install_args: pnpm
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "26"
+          node-version: "24"
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
@@ -67,6 +67,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
       - name: Create or verify the tag at the published commit
         run: |
           # Tag the commit npm recorded for this version (gitHead), not HEAD, so
@@ -95,7 +99,11 @@ jobs:
             echo "npm has no gitHead for $name@$VERSION after 15 minutes" >&2
             exit 1
           fi
-          if existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null); then
+          if ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha' 2>/dev/null); then
+            existing=${ref#* }
+            if [ "${ref%% *}" = "tag" ]; then
+              existing=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$existing" --jq .object.sha)
+            fi
             if [ "$existing" != "$target" ]; then
               echo "$TAG points at $existing, but $name@$VERSION was published from $target" >&2
               exit 1

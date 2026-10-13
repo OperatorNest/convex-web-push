@@ -1,6 +1,6 @@
 import { base64urlDecode, base64urlEncode, utf8Encode } from "./base64url.js";
 import { webPushError } from "./errors.js";
-import { sha256Hex } from "./sha256.js";
+import { sha256 } from "./sha256.js";
 
 const ECDSA = { name: "ECDSA", namedCurve: "P-256" } as const;
 const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
@@ -10,23 +10,22 @@ const VAPID_TOKEN_TTL_SECONDS = 12 * 60 * 60;
 
 export type VapidKeys = { publicKey: string; privateKey: string };
 
-/** Generates a VAPID key pair: 65-byte public point and 32-byte private scalar, both base64url. */
 export async function generateVapidKeys(): Promise<VapidKeys> {
-  const pair = await crypto.subtle.generateKey(ECDSA, true, ["sign", "verify"]);
-  const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
-  const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-  if (!jwk.d) {
-    throw webPushError(
-      "WEB_PUSH_CRYPTO_UNSUPPORTED",
-      "WebCrypto did not export the private scalar",
-    );
+  try {
+    const pair = await crypto.subtle.generateKey(ECDSA, true, ["sign", "verify"]);
+    const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+    const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+    if (!jwk.d) throw webPushError("WEB_PUSH_CRYPTO_UNSUPPORTED");
+    return { publicKey: base64urlEncode(publicKey), privateKey: jwk.d };
+  } catch {
+    throw webPushError("WEB_PUSH_CRYPTO_UNSUPPORTED");
   }
-  return { publicKey: base64urlEncode(publicKey), privateKey: jwk.d };
 }
 
 type Parsed = { ok: true; bytes: Uint8Array<ArrayBuffer> } | { ok: false; problem: string };
 
 function parsePublicKey(publicKey: string): Parsed {
+  if (publicKey.length > 88) return { ok: false, problem: "VAPID_PUBLIC_KEY is too long" };
   let bytes: Uint8Array<ArrayBuffer>;
   try {
     bytes = base64urlDecode(publicKey);
@@ -40,45 +39,54 @@ function parsePublicKey(publicKey: string): Parsed {
 }
 
 function parsePrivateKey(privateKey: string): Parsed {
+  if (privateKey.length > 44)
+    return { ok: false, problem: "VAPID_PRIVATE_KEY must decode to exactly 32 bytes" };
   let bytes: Uint8Array<ArrayBuffer>;
   try {
     bytes = base64urlDecode(privateKey);
   } catch {
     return { ok: false, problem: "VAPID_PRIVATE_KEY is not valid base64url" };
   }
-  if (bytes.byteLength === 0 || bytes.byteLength > 32) {
-    return { ok: false, problem: "VAPID_PRIVATE_KEY must be a 32-byte scalar" };
+  if (bytes.byteLength !== 32) {
+    return { ok: false, problem: "VAPID_PRIVATE_KEY must decode to exactly 32 bytes" };
   }
   return { ok: true, bytes };
 }
 
 function parseOrThrow(parsed: Parsed): Uint8Array<ArrayBuffer> {
-  if (!parsed.ok) throw webPushError("WEB_PUSH_INVALID_VAPID_KEY", parsed.problem);
+  if (!parsed.ok) throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
   return parsed.bytes;
 }
 
-/** Imports the signing key. WebCrypto cannot import a raw EC scalar, so this goes through JWK. */
 export async function importVapidPrivateKey(
   publicKey: string,
   privateKey: string,
 ): Promise<CryptoKey> {
   const pub = parseOrThrow(parsePublicKey(publicKey));
   const d = parseOrThrow(parsePrivateKey(privateKey));
-  const padded = new Uint8Array(32);
-  padded.set(d, 32 - d.byteLength);
-  return crypto.subtle.importKey(
-    "jwk",
-    {
-      kty: "EC",
-      crv: "P-256",
-      d: base64urlEncode(padded),
-      x: base64urlEncode(pub.slice(1, 33)),
-      y: base64urlEncode(pub.slice(33, 65)),
-    },
-    ECDSA,
-    false,
-    ["sign"],
-  );
+  try {
+    const privateCryptoKey = await crypto.subtle.importKey(
+      "jwk",
+      {
+        kty: "EC",
+        crv: "P-256",
+        d: base64urlEncode(d),
+        x: base64urlEncode(pub.slice(1, 33)),
+        y: base64urlEncode(pub.slice(33, 65)),
+      },
+      ECDSA,
+      false,
+      ["sign"],
+    );
+    const publicCryptoKey = await importVapidPublicKey(publicKey);
+    const probe = utf8Encode("convex-web-push VAPID key-pair verification");
+    const signature = await crypto.subtle.sign(SIGN, privateCryptoKey, probe);
+    if (!(await crypto.subtle.verify(SIGN, publicCryptoKey, signature, probe)))
+      throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
+    return privateCryptoKey;
+  } catch {
+    throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
+  }
 }
 
 function importVapidPublicKey(publicKey: string): Promise<CryptoKey> {
@@ -89,27 +97,45 @@ function importVapidPublicKey(publicKey: string): Promise<CryptoKey> {
 
 const RESERVED_HOST = /(^|\.)(localhost|local|invalid|test)$/i;
 
-/** Returns an error message, or null when the subject is acceptable to Apple, FCM and Mozilla. */
 export function validateVapidSubject(subject: string | undefined): string | null {
   if (!subject) return "VAPID_SUBJECT is not set";
-  if (subject.startsWith("mailto:")) {
-    const host = subject.slice(subject.lastIndexOf("@") + 1);
-    if (!subject.includes("@") || !host || RESERVED_HOST.test(host)) {
-      return "VAPID_SUBJECT mailto: must contain an address on a real domain";
-    }
-    return null;
-  }
-  if (subject.startsWith("https://")) {
-    try {
-      if (RESERVED_HOST.test(new URL(subject).hostname)) {
-        return "VAPID_SUBJECT must not use a reserved host such as localhost";
-      }
+  const invalid =
+    "VAPID_SUBJECT must be a control-free mailto address or HTTPS contact URL on a non-reserved host";
+  if (subject.length > 2048 || /[\p{Cc}\p{Z}]/u.test(subject)) return invalid;
+  try {
+    const uri = new URL(subject);
+    if (uri.protocol === "mailto:") {
+      const address = decodeURIComponent(uri.pathname);
+      const parts = address.split("@");
+      const [local, host] = parts;
+      if (parts.length !== 2 || !local || !host || /[\p{Cc}\p{Z},<>]/u.test(address))
+        return invalid;
+      const domain = new URL("https://" + host);
+      if (
+        domain.hostname !== host.toLowerCase() ||
+        domain.pathname !== "/" ||
+        domain.search ||
+        domain.hash ||
+        domain.port ||
+        domain.username ||
+        domain.password ||
+        RESERVED_HOST.test(domain.hostname.replace(/\.$/, ""))
+      )
+        return invalid;
       return null;
-    } catch {
-      return "VAPID_SUBJECT is not a valid URL";
     }
+    if (
+      uri.protocol !== "https:" ||
+      !uri.hostname ||
+      uri.username ||
+      uri.password ||
+      RESERVED_HOST.test(uri.hostname.replace(/\.$/, ""))
+    )
+      return invalid;
+    return null;
+  } catch {
+    return invalid;
   }
-  return "VAPID_SUBJECT must start with mailto: or https://";
 }
 
 export type VapidEnv = {
@@ -122,11 +148,6 @@ export type VapidConfig =
   | { ok: true; publicKey: string; privateKey: string; subject: string }
   | { ok: false; problem: string };
 
-/**
- * The one place VAPID settings are read and checked. It is synchronous so mutations can use it,
- * and the problem text never contains key material. A well-formed pair can still be mismatched;
- * `importVapidPrivateKey` catches that at send time.
- */
 export function readVapidConfig(env: VapidEnv): VapidConfig {
   const {
     VAPID_PUBLIC_KEY: publicKey,
@@ -143,20 +164,27 @@ export function readVapidConfig(env: VapidEnv): VapidConfig {
   if (subjectProblem !== null || subject === undefined) {
     return { ok: false, problem: subjectProblem ?? "VAPID_SUBJECT is not set" };
   }
-  return { ok: true, publicKey, privateKey, subject };
+  return {
+    ok: true,
+    publicKey: base64urlEncode(pub.bytes),
+    privateKey: base64urlEncode(priv.bytes),
+    subject,
+  };
 }
 
-/** Short non-secret fingerprint of the public key, stored with each subscription. */
 export function vapidKeyFingerprint(publicKey: string | undefined): string {
-  return publicKey ? sha256Hex(publicKey).slice(0, 16) : "none";
+  if (!publicKey) return "none";
+  const bytes = parseOrThrow(parsePublicKey(publicKey));
+  return Array.from(sha256(bytes).slice(0, 8), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 type SignVapidJwtInput = {
-  /** Origin of the push endpoint, for example `https://fcm.googleapis.com`. */
   audience: string;
   subject: string;
   privateKey: CryptoKey;
-  /** Epoch milliseconds. Defaults to `Date.now()`. */
+
   now?: number | undefined;
   ttlSeconds?: number;
 };
@@ -178,7 +206,6 @@ export async function signVapidJwt(input: SignVapidJwtInput): Promise<string> {
   return `${signingInput}.${base64urlEncode(signature)}`;
 }
 
-/** `Authorization` header value per RFC 8292 section 3. */
 export function vapidAuthorization(jwt: string, publicKey: string): string {
   return `vapid t=${jwt}, k=${publicKey}`;
 }
@@ -194,7 +221,6 @@ function decodeJsonPart(part: string): Record<string, unknown> {
   return Object.fromEntries(Object.entries(parsed));
 }
 
-/** Verifies an ES256 JWT against a VAPID public key. Returns null when the signature is invalid. */
 export async function verifyVapidJwt(
   jwt: string,
   publicKey: string,

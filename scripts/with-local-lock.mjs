@@ -1,5 +1,4 @@
 // Serializes access to the anonymous local Convex backend across sibling repos.
-// Usage: node scripts/with-local-lock.mjs <command> [...args]
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
@@ -22,6 +21,7 @@ const RETRY_MS = 2_000;
 const WAIT_MS = 30 * 60_000;
 const HEARTBEAT_MS = 30_000;
 const STALE_MS = 3 * 60_000;
+const GROUP_EXIT_MS = 30_000;
 
 function readOwner() {
   try {
@@ -88,12 +88,36 @@ export async function acquireLock() {
   };
 }
 
-function run(command, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "inherit" });
+// Returns false once no live process in the group remains. macOS reports EPERM, not ESRCH, for a
+// group whose remaining members are all zombies.
+function signalGroup(pid, signal) {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH" || error?.code === "EPERM") return false;
+    throw error;
+  }
+}
+
+async function waitForGroupExit(pid) {
+  const deadline = Date.now() + GROUP_EXIT_MS;
+  while (signalGroup(pid, Date.now() > deadline ? "SIGKILL" : 0)) await sleep(100);
+}
+
+// The child leads its own process group so a signal reaches the backend it starts, and the lock
+// stays held until every process in that group exits.
+async function run(command, args) {
+  const child = spawn(command, args, { stdio: ["ignore", "inherit", "inherit"], detached: true });
+  const forward = (signal) => signalGroup(child.pid, signal);
+  process.on("SIGINT", forward);
+  process.on("SIGTERM", forward);
+  const status = await new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => resolve(signal ? 1 : (code ?? 1)));
   });
+  await waitForGroupExit(child.pid);
+  return status;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
@@ -103,12 +127,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     process.exit(2);
   }
   const release = await acquireLock();
-  const onSignal = (signal) => {
-    release();
-    process.kill(process.pid, signal);
-  };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
   let status = 1;
   try {
     status = await run(command, args);

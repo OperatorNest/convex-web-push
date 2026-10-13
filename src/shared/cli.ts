@@ -16,7 +16,6 @@ function formatEnvLines(keys: VapidKeys, subject: string): string {
   ].join("\n");
 }
 
-/** Pure CLI entry point. The `bin` script only forwards `argv` and prints the result. */
 export async function runCli(
   argv: readonly string[],
   generate: () => Promise<VapidKeys> = generateVapidKeys,
@@ -43,9 +42,9 @@ export async function runCli(
   if (subjectProblem) return { code: 1, stdout: "", stderr: `${subjectProblem}\n` };
   const stdout = `${formatEnvLines(await generate(), subject)}
 Set them on your Convex deployment, for example:
-  npx convex env set VAPID_PUBLIC_KEY <value>
-  npx convex env set VAPID_PRIVATE_KEY <value>
-  npx convex env set VAPID_SUBJECT ${subject}
+  pnpm exec convex env set VAPID_PUBLIC_KEY '<value>'
+  pnpm exec convex env set VAPID_PRIVATE_KEY '<value>'
+  pnpm exec convex env set VAPID_SUBJECT '${subject.replaceAll("'", "'\"'\"'")}'
 Keep VAPID_PRIVATE_KEY secret and never commit it.
 `;
   return { code: 0, stdout, stderr: "" };

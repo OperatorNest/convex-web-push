@@ -1,20 +1,18 @@
 import { concatBytes, base64urlEncode, utf8Encode } from "./base64url.js";
 import { webPushError } from "./errors.js";
 
-/** RFC 8030 push services accept 4096-byte bodies: 4096 - 86 header - 1 delimiter - 16 tag. */
 export const MAX_PLAINTEXT_BYTES = 3993;
 const RECORD_SIZE = 4096;
 const HEADER_BYTES = 86;
 
 export type EncryptInput = {
   plaintext: Uint8Array;
-  /** Subscriber `keys.p256dh`: 65-byte uncompressed P-256 point. */
+
   uaPublic: Uint8Array;
-  /** Subscriber `keys.auth`: 16 bytes. */
+
   authSecret: Uint8Array;
 };
 
-/** Fixed ephemeral key and salt, used by `selfTest` and tests to reproduce RFC 8291 Appendix A. */
 export type FixedKeyMaterial = {
   ephemeral: { privateKeyD: Uint8Array; publicKey: Uint8Array };
   salt: Uint8Array;
@@ -37,12 +35,10 @@ async function hkdf(
   return new Uint8Array(out);
 }
 
-/** Encrypts `plaintext` into a single aes128gcm record (RFC 8291 + RFC 8188), ready to POST. */
 export function encryptAes128gcm(input: EncryptInput): Promise<Uint8Array<ArrayBuffer>> {
   return encryptInternal(input, undefined);
 }
 
-/** Reproduces RFC 8291 Appendix A with caller-supplied key material. Sends use {@link encryptAes128gcm}. */
 export function encryptAes128gcmWithFixedKeys(
   input: EncryptInput,
   fixed: FixedKeyMaterial,
@@ -55,19 +51,13 @@ async function encryptInternal(
   fixed: FixedKeyMaterial | undefined,
 ): Promise<Uint8Array<ArrayBuffer>> {
   if (plaintext.byteLength > MAX_PLAINTEXT_BYTES) {
-    throw webPushError(
-      "WEB_PUSH_PAYLOAD_TOO_LARGE",
-      `Payload is ${plaintext.byteLength} bytes; the maximum is ${MAX_PLAINTEXT_BYTES}`,
-    );
+    throw webPushError("WEB_PUSH_PAYLOAD_TOO_LARGE");
   }
   if (uaPublic.byteLength !== 65 || uaPublic[0] !== 4) {
-    throw webPushError(
-      "WEB_PUSH_INVALID_SUBSCRIPTION",
-      "p256dh must be a 65-byte uncompressed P-256 key",
-    );
+    throw webPushError("WEB_PUSH_INVALID_SUBSCRIPTION");
   }
   if (authSecret.byteLength !== 16) {
-    throw webPushError("WEB_PUSH_INVALID_SUBSCRIPTION", "auth must be 16 bytes");
+    throw webPushError("WEB_PUSH_INVALID_SUBSCRIPTION");
   }
   const recordLength = plaintext.byteLength + 1;
 

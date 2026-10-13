@@ -12,6 +12,6 @@ Read `AGENTS.md`, package scripts, and `scripts/smoke.mjs` before choosing check
 3. For executable documentation, run its code path or the closest example and `pnpm fmt:check`. Prose-only changes need formatting verification.
 4. Distinguish simulator, anonymous local runtime, and external provider or browser observations. Local smoke does not qualify a provider account.
 
-Where `pnpm e2e` is available, start with `--dry-run`. The interactive end-to-end test is for a maintainer using their own provider test account and keys, outside CI. Keep credentials in ignored local files and review only redacted observations. Where no such script exists, state that limit.
+No script calls live push services.
 
 The scripts serialize local backend access through a shared lock. Do not terminate another checkout's backend.

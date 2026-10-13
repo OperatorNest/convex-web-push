@@ -7,7 +7,6 @@ const DEFAULT_PUSH_HOSTS = [
   "*.notify.windows.com",
 ] as const;
 
-/** Four weeks: the smallest maximum TTL among the major push services. */
 export const MAX_TTL_SECONDS = 2_419_200;
 const DEFAULT_TTL_SECONDS = 86_400;
 
@@ -43,10 +42,6 @@ export type EndpointCheck =
   | { ok: true; url: URL; service: PushService }
   | { ok: false; reason: string };
 
-/**
- * SSRF guard. Subscription endpoints come from untrusted browsers, so only https URLs on known push
- * services (plus the caller's `extraHosts`) are accepted, never IP literals or localhost.
- */
 export function checkPushEndpoint(
   endpoint: string,
   extraHosts: readonly string[] = [],
@@ -62,7 +57,12 @@ export function checkPushEndpoint(
     return { ok: false, reason: "Endpoint must not contain credentials" };
   if (url.port) return { ok: false, reason: "Endpoint must use the default https port" };
   const host = url.hostname.toLowerCase();
-  if (isIpLiteral(host) || host === "localhost" || host.endsWith(".localhost")) {
+  if (
+    host.endsWith(".") ||
+    isIpLiteral(host) ||
+    host === "localhost" ||
+    host.endsWith(".localhost")
+  ) {
     return { ok: false, reason: "Endpoint host is not allowed" };
   }
   const allowed = [...DEFAULT_PUSH_HOSTS, ...extraHosts].some((pattern) =>

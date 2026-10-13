@@ -13,7 +13,6 @@ import {
 } from "../test-helpers.js";
 import { isWebPushError, MAX_PLAINTEXT_BYTES, WebPush } from "./index.js";
 
-// The example app wraps every public client method, so driving it calls each of them.
 const modules = import.meta.glob("../../example/convex/**/*.ts");
 
 beforeEach(() => vi.useFakeTimers());
@@ -40,7 +39,6 @@ async function subscribe(t: Harness, userId: string) {
 const page = (t: Harness, userId: string, numItems = 10, cursor: string | null = null) =>
   t.query(internal.admin.notifications, { userId, paginationOpts: { numItems, cursor } });
 
-/** A ctx that records what the client sends, then stops before any component runs. */
 function recorder() {
   const stop = new Error("recorded");
   const calls: { ref: unknown; args: unknown }[] = [];
@@ -93,7 +91,9 @@ test("sendNotification sends ttl, urgency, topic and the serialized notification
       topic: "unread",
     }),
   );
-  const notification = required(await t.query(internal.admin.notification, { notificationId: id }));
+  const notification = required(
+    await t.query(internal.admin.notification, { notificationId: id, userId: "u1" }),
+  );
   expect(notification.options).toEqual({ ttl: 600, urgency: "high", topic: "unread" });
   expect(JSON.parse(notification.payload)).toEqual({ title: "Hi" });
 });
@@ -103,12 +103,14 @@ test("getNotification and getDeliveries follow a notification to delivered", asy
   await subscribe(t, "u1");
   const id = required(await t.mutation(internal.admin.notify, { userId: "u1", title: "Hi" }));
   await drain(t);
-  expect(await t.query(internal.admin.notification, { notificationId: id })).toMatchObject({
+  expect(
+    await t.query(internal.admin.notification, { notificationId: id, userId: "u1" }),
+  ).toMatchObject({
     status: "delivered",
     counts: { queued: 0, sent: 1, failed: 0, gone: 0 },
     testMode: true,
   });
-  expect(await t.query(internal.admin.deliveries, { notificationId: id })).toEqual([
+  expect(await t.query(internal.admin.deliveries, { notificationId: id, userId: "u1" })).toEqual([
     { status: "sent", attempts: 1 },
   ]);
 });
@@ -137,12 +139,12 @@ test("sendRaw sends a string as is and bytes as base64url", async () => {
   const binary = required(
     await t.mutation(internal.admin.notifyRaw, { userId: "u1", payload: bytes.buffer }),
   );
-  expect((await t.query(internal.admin.notification, { notificationId: text }))?.payload).toBe(
-    "custom:42",
-  );
-  expect((await t.query(internal.admin.notification, { notificationId: binary }))?.payload).toBe(
-    base64urlEncode(bytes),
-  );
+  expect(
+    (await t.query(internal.admin.notification, { notificationId: text, userId: "u1" }))?.payload,
+  ).toBe("custom:42");
+  expect(
+    (await t.query(internal.admin.notification, { notificationId: binary, userId: "u1" }))?.payload,
+  ).toBe(base64urlEncode(bytes));
 });
 
 test("sendNotificationBatch reports progress through getBatch and continues past the budget", async () => {
@@ -201,9 +203,11 @@ test("removeSubscription only removes for the matching user, removeAllForUser cl
 
 test("getPublicKey is null until configured, and selfTest reports the runtime", async () => {
   const t = setup();
-  expect(await t.query(api.example.publicKey, {})).toBeNull();
+  expect(await t.withIdentity({ subject: "reader" }).query(api.example.publicKey, {})).toBeNull();
   const keys = await configureVapid();
-  expect(await t.query(api.example.publicKey, {})).toBe(keys.publicKey);
+  expect(await t.withIdentity({ subject: "reader" }).query(api.example.publicKey, {})).toBe(
+    keys.publicKey,
+  );
   const report = await t.action(internal.admin.selfTest, {});
   expect(report).toMatchObject({ ok: true, testMode: false, config: { configured: true } });
 });
@@ -268,3 +272,54 @@ test("a plain client leaves optional arguments out instead of sending undefined"
 test("isWebPushError is exported for apps and rejects other errors", () => {
   expect(isWebPushError(new Error("WEB_PUSH_NOT_CONFIGURED"))).toBe(false);
 });
+
+test("recordSubscription discards undeclared endpoint policy", async () => {
+  const client = new WebPush(components.webPush);
+  const { ctx, stop, lastArgs } = recorder();
+  const { subscription } = await makeSubscription();
+  const args = { userId: "u", subscription, allowedPushHosts: ["evil.example.com"] };
+  await expect(client.recordSubscription(ctx, args)).rejects.toBe(stop);
+  expect(lastArgs()).not.toHaveProperty("allowedPushHosts");
+});
+test("sendRaw rejects oversized text and bytes before calling the component", async () => {
+  const client = new WebPush(components.webPush);
+  const { ctx } = recorder();
+  for (const payload of [
+    "x".repeat(MAX_PLAINTEXT_BYTES + 1),
+    new Uint8Array(MAX_PLAINTEXT_BYTES + 1),
+  ]) {
+    await expect(client.sendRaw(ctx, { userId: "u", payload })).rejects.toMatchObject({
+      data: { code: "WEB_PUSH_PAYLOAD_TOO_LARGE" },
+    });
+  }
+});
+
+test.each([false, true])(
+  "batch callback reports terminal failure=%s once through the app",
+  async (failed) => {
+    const t = setup();
+    const userIds = Array.from({ length: 80 }, (_, i) => `u${i}`);
+    for (const userId of userIds) {
+      await subscribe(t, userId);
+      await subscribe(t, userId);
+    }
+    const first = await t.mutation(internal.admin.broadcast, { userIds, title: "News" });
+    expect(first.done).toBe(false);
+    if (failed) vi.stubEnv("WEB_PUSH_MAX_PARALLELISM", "0");
+    await drain(t);
+    const progress = required(
+      await t.query(internal.admin.batchProgress, { batchId: first.batchId }),
+    );
+    expect(progress.status).toBe(failed ? "failed" : "done");
+    const results = await t.run((ctx) =>
+      ctx.db
+        .query("batchResults")
+        .withIndex("by_batchId", (q) => q.eq("batchId", first.batchId))
+        .take(2),
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ batchId: first.batchId, ...progress });
+    if (failed) expect(results[0]?.errorCode).toBe("WEB_PUSH_NOT_CONFIGURED");
+    else expect(results[0]?.errorCode).toBeUndefined();
+  },
+);

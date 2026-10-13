@@ -1,11 +1,9 @@
-/** Unpadded base64url (RFC 4648 section 5), built on `btoa`/`atob` so it runs without Node APIs. */
 export function base64urlEncode(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-/** Decodes base64url, tolerating padding and the standard `+/` alphabet. Throws on invalid input. */
 export function base64urlDecode(input: string): Uint8Array<ArrayBuffer> {
   const normalized = input.replace(/=+$/, "").replaceAll("+", "-").replaceAll("/", "_");
   if (!/^[A-Za-z0-9_-]*$/.test(normalized) || normalized.length % 4 === 1) {

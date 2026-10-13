@@ -1,4 +1,7 @@
-import { register as registerWorkpool } from "@convex-dev/workpool/test";
+const workpoolTestEntry = "@convex-dev/workpool/test";
+const workpool: {
+  register(t: TestConvex<SchemaDefinition<GenericSchema, boolean>>, name: string): void;
+} = await import(workpoolTestEntry);
 import type { TestConvex } from "convex-test";
 import type { GenericSchema, SchemaDefinition } from "convex/server";
 import schema from "./component/schema.js";
@@ -7,13 +10,16 @@ type Modules = Parameters<
   TestConvex<SchemaDefinition<GenericSchema, boolean>>["registerComponent"]
 >[2];
 
-const modules = import.meta.glob(["./component/**/*.ts", "!./component/**/*.test.ts"]) as Modules;
+type GlobImportMeta = ImportMeta & { glob: (patterns: string[]) => Modules };
+const modules = (import.meta as GlobImportMeta).glob([
+  "./component/**/*.ts",
+  "!./component/**/*.test.ts",
+]);
 
-/** Registers the web push component and its workpool child with a `convex-test` instance. */
 export function register(
   t: TestConvex<SchemaDefinition<GenericSchema, boolean>>,
   name = "webPush",
 ) {
   t.registerComponent(name, schema, modules);
-  registerWorkpool(t, `${name}/workpool`);
+  workpool.register(t, `${name}/workpool`);
 }

@@ -6,7 +6,7 @@ body:
     id: user_task
     attributes:
       label: User task
-      description: What are you trying to accomplish?
+      description: Describe the task the proposed change would enable.
     validations:
       required: true
   - type: textarea
@@ -25,7 +25,7 @@ body:
     id: alternatives
     attributes:
       label: Alternatives considered
-      description: What workarounds or other approaches have you considered?
+      description: Describe the current workaround.
     validations:
       required: true
   - type: textarea

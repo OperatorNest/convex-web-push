@@ -1,8 +1,3 @@
-// Ready-to-copy classic service worker for @operatornest/convex-web-push.
-// Copy this file to your site root (for example public/sw.js). It must be served from your origin.
-// It handles the payload produced by WebPush.sendNotification. If you bundle your own service
-// worker, use registerPushHandlers from "@operatornest/convex-web-push/sw" instead.
-
 const DEFAULT_TITLE = "Notification";
 const DEFAULT_URL = "/";
 
@@ -46,9 +41,7 @@ self.addEventListener("notificationclick", (event) => {
       origin,
     );
     if (url.origin === origin) target = url.href;
-  } catch {
-    // Keep the default target.
-  }
+  } catch {}
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });

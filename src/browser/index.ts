@@ -1,7 +1,5 @@
 import { base64urlDecode, bytesEqual } from "../shared/base64url.js";
-import { webPushError } from "../shared/errors.js";
-
-/** Framework-agnostic browser helpers. Call `subscribe` from a user gesture (a click handler). */
+import { isWebPushError, webPushError } from "../shared/errors.js";
 
 export type WebPushSubscriptionJSON = {
   endpoint: string;
@@ -12,21 +10,15 @@ export type WebPushSubscriptionJSON = {
 export type PermissionState = NotificationPermission | "unsupported";
 
 export type RegistrationOptions = {
-  /** Reuse an existing service worker registration. */
   registration?: ServiceWorkerRegistration;
-  /**
-   * Path of the service worker script to register when no registration is given. Default `/sw.js`.
-   * Serve it from the page's origin; its scope must cover the page that calls `subscribe`.
-   */
+
   serviceWorkerPath?: string;
 };
 
 export type SubscribeOptions = RegistrationOptions & {
-  /** The VAPID public key from `webPush.getPublicKey`. */
   vapidPublicKey: string;
 };
 
-/** False in non-installed iOS Safari tabs, where Web Push needs the app added to the Home Screen. */
 export function isSupported(): boolean {
   return (
     typeof navigator !== "undefined" &&
@@ -42,34 +34,18 @@ export function permissionState(): PermissionState {
 
 const ACTIVATION_TIMEOUT_MS = 10_000;
 
-/**
- * Resolves once the registration has an active worker. Unlike `navigator.serviceWorker.ready`
- * this watches the given registration, so a worker whose scope does not cover the page cannot
- * hang the call forever.
- */
 function waitForActive(
   registration: ServiceWorkerRegistration,
   timeoutMs = ACTIVATION_TIMEOUT_MS,
 ): Promise<void> {
   if (registration.active) return Promise.resolve();
   const pending = registration.installing ?? registration.waiting;
-  if (!pending)
-    return Promise.reject(
-      webPushError(
-        "WEB_PUSH_SERVICE_WORKER_FAILED",
-        "The service worker registration has no worker",
-      ),
-    );
+  if (!pending) return Promise.reject(webPushError("WEB_PUSH_SERVICE_WORKER_FAILED"));
   const worker: ServiceWorker = pending;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       worker.removeEventListener("statechange", onChange);
-      reject(
-        webPushError(
-          "WEB_PUSH_SERVICE_WORKER_FAILED",
-          "The service worker did not activate in time. Check that it is served from your origin and that its scope covers this page.",
-        ),
-      );
+      reject(webPushError("WEB_PUSH_SERVICE_WORKER_FAILED"));
     }, timeoutMs);
     function onChange() {
       if (worker.state === "activated") {
@@ -79,12 +55,7 @@ function waitForActive(
       } else if (worker.state === "redundant") {
         clearTimeout(timer);
         worker.removeEventListener("statechange", onChange);
-        reject(
-          webPushError(
-            "WEB_PUSH_SERVICE_WORKER_FAILED",
-            "The service worker became redundant (installation failed)",
-          ),
-        );
+        reject(webPushError("WEB_PUSH_SERVICE_WORKER_FAILED"));
       }
     }
     worker.addEventListener("statechange", onChange);
@@ -94,9 +65,14 @@ function waitForActive(
 async function resolveRegistration(
   options: RegistrationOptions,
 ): Promise<ServiceWorkerRegistration> {
-  const registration =
-    options.registration ??
-    (await navigator.serviceWorker.register(options.serviceWorkerPath ?? "/sw.js"));
+  let registration: ServiceWorkerRegistration;
+  try {
+    registration =
+      options.registration ??
+      (await navigator.serviceWorker.register(options.serviceWorkerPath ?? "/sw.js"));
+  } catch {
+    throw webPushError("WEB_PUSH_SERVICE_WORKER_FAILED");
+  }
   await waitForActive(registration);
   return registration;
 }
@@ -104,11 +80,7 @@ async function resolveRegistration(
 function toJSON(subscription: PushSubscription): WebPushSubscriptionJSON {
   const json = subscription.toJSON();
   const { p256dh, auth } = json.keys ?? {};
-  if (!json.endpoint || !p256dh || !auth)
-    throw webPushError(
-      "WEB_PUSH_INVALID_SUBSCRIPTION",
-      "The browser returned an incomplete push subscription",
-    );
+  if (!json.endpoint || !p256dh || !auth) throw webPushError("WEB_PUSH_INVALID_SUBSCRIPTION");
   return {
     endpoint: json.endpoint,
     expirationTime: json.expirationTime ?? null,
@@ -116,19 +88,13 @@ function toJSON(subscription: PushSubscription): WebPushSubscriptionJSON {
   };
 }
 
-/**
- * Registers the service worker, asks for permission, and subscribes to push. Returns the
- * subscription JSON to pass to your app mutation that calls `recordSubscription`.
- */
-export async function subscribe(options: SubscribeOptions): Promise<WebPushSubscriptionJSON> {
-  if (!isSupported())
-    throw webPushError("WEB_PUSH_UNSUPPORTED", "Web Push is not supported in this browser");
+async function subscribeImpl(options: SubscribeOptions): Promise<WebPushSubscriptionJSON> {
+  if (!isSupported()) throw webPushError("WEB_PUSH_UNSUPPORTED");
   const permission = await Notification.requestPermission();
-  if (permission !== "granted")
-    throw webPushError("WEB_PUSH_PERMISSION_DENIED", `Notification permission was ${permission}`);
+  if (permission !== "granted") throw webPushError("WEB_PUSH_PERMISSION_DENIED");
 
   const registration = await resolveRegistration(options);
-  const applicationServerKey = base64urlDecode(options.vapidPublicKey);
+  const applicationServerKey = urlBase64ToUint8Array(options.vapidPublicKey);
   let subscription = await registration.pushManager.getSubscription();
   const existingKey = subscription?.options.applicationServerKey;
   if (
@@ -146,8 +112,7 @@ export async function subscribe(options: SubscribeOptions): Promise<WebPushSubsc
   return toJSON(subscription);
 }
 
-/** The current browser subscription, or null. Compare it with the server on each app load. */
-export async function getSubscription(
+async function getSubscriptionImpl(
   options: RegistrationOptions = {},
 ): Promise<WebPushSubscriptionJSON | null> {
   if (!isSupported()) return null;
@@ -158,8 +123,7 @@ export async function getSubscription(
   return subscription ? toJSON(subscription) : null;
 }
 
-/** Unsubscribes this browser. Returns the removed endpoint so you can call `removeSubscription`. */
-export async function unsubscribe(options: RegistrationOptions = {}): Promise<string | null> {
+async function unsubscribeImpl(options: RegistrationOptions = {}): Promise<string | null> {
   if (!isSupported()) return null;
   const registration =
     options.registration ??
@@ -171,4 +135,30 @@ export async function unsubscribe(options: RegistrationOptions = {}): Promise<st
   return endpoint;
 }
 
-export { base64urlDecode as urlBase64ToUint8Array };
+async function browserOperation<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (isWebPushError(error)) throw error;
+    throw webPushError("WEB_PUSH_BROWSER_FAILED");
+  }
+}
+export function subscribe(options: SubscribeOptions): Promise<WebPushSubscriptionJSON> {
+  return browserOperation(() => subscribeImpl(options));
+}
+export function getSubscription(
+  options: RegistrationOptions = {},
+): Promise<WebPushSubscriptionJSON | null> {
+  return browserOperation(() => getSubscriptionImpl(options));
+}
+export function unsubscribe(options: RegistrationOptions = {}): Promise<string | null> {
+  return browserOperation(() => unsubscribeImpl(options));
+}
+export function urlBase64ToUint8Array(value: string): Uint8Array<ArrayBuffer> {
+  try {
+    if (value.length > 88) throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
+    return base64urlDecode(value);
+  } catch {
+    throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
+  }
+}

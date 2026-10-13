@@ -43,7 +43,7 @@ test("posts an encrypted, signed message with the protocol headers", async () =>
   const { input, keys, uaPublic, authSecret, uaPrivate } = await setup();
   const fetched = stubFetch(() => new Response(null, { status: 201 }));
 
-  expect(await sendWebPush(input)).toEqual({ kind: "sent", statusCode: 201 });
+  expect(await sendWebPush(input)).toEqual({ kind: "sent", statusCode: 201, attempted: true });
 
   const { url, init } = fetched.request();
   expect(String(url)).toBe(input.endpoint);
@@ -92,12 +92,12 @@ test("never calls fetch for an endpoint outside the allowlist", async () => {
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
-test("classifies responses and keeps a truncated body", async () => {
+test("classifies responses without retaining their bodies", async () => {
   const { input } = await setup();
   vi.stubGlobal("fetch", async () => new Response("x".repeat(500), { status: 410 }));
   const gone = await sendWebPush(input);
   expect(gone).toMatchObject({ kind: "gone", statusCode: 410 });
-  expect(gone.detail).toHaveLength(200);
+  expect(gone.error).toMatchObject({ code: "WEB_PUSH_SERVICE_FAILED", providerStatus: 410 });
 
   vi.stubGlobal(
     "fetch",
@@ -149,6 +149,6 @@ test("a successful response body is cancelled, not left open", async () => {
     },
   });
   stubFetch(() => new Response(body, { status: 201 }));
-  expect(await sendWebPush(input)).toEqual({ kind: "sent", statusCode: 201 });
+  expect(await sendWebPush(input)).toEqual({ kind: "sent", statusCode: 201, attempted: true });
   expect(cancelled).toBe(true);
 });

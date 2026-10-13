@@ -1,6 +1,11 @@
 import { v, type Infer } from "convex/values";
+import { WEB_PUSH_ERROR_CODES } from "./errors.js";
 
-/** The only definition of each shape. Types come from `Infer`, never a second hand-written copy. */
+export const vWebPushError = v.object({
+  code: v.union(...WEB_PUSH_ERROR_CODES.map((code) => v.literal(code))),
+  message: v.string(),
+  providerStatus: v.optional(v.number()),
+});
 
 export const vService = v.union(
   v.literal("fcm"),
@@ -39,7 +44,16 @@ export const vDeliveryStatus = v.union(
   v.literal("retry"),
 );
 
-export const vBatchStatus = v.union(v.literal("running"), v.literal("done"));
+export const vBatchStatus = v.union(v.literal("running"), v.literal("done"), v.literal("failed"));
+
+export const vBatchResult = v.object({
+  batchId: v.string(),
+  status: v.union(v.literal("done"), v.literal("failed")),
+  total: v.number(),
+  processed: v.number(),
+  notificationIds: v.array(v.string()),
+  errorCode: v.optional(vWebPushError.fields.code),
+});
 
 export const vCounts = v.object({
   queued: v.number(),
@@ -48,14 +62,12 @@ export const vCounts = v.object({
   gone: v.number(),
 });
 
-/** The JSON from `PushSubscription.toJSON()` in the browser. */
 export const vWebPushSubscription = v.object({
   endpoint: v.string(),
   expirationTime: v.optional(v.union(v.number(), v.null())),
   keys: v.object({ p256dh: v.string(), auth: v.string() }),
 });
 
-/** Arguments the component passes to your `onComplete` mutation. */
 export const vNotificationResult = v.object({
   notificationId: v.string(),
   userId: v.string(),
@@ -63,16 +75,15 @@ export const vNotificationResult = v.object({
   counts: vCounts,
 });
 
-/** Everything one send carries besides the recipients. */
 export const vSendFields = v.object({
   payload: v.string(),
-  /** Set to "base64url" when `payload` carries raw bytes instead of UTF-8 text. */
+
   payloadEncoding: v.optional(v.literal("base64url")),
   ttl: v.optional(v.number()),
   urgency: v.optional(vUrgency),
   topic: v.optional(v.string()),
   idempotencyKey: v.optional(v.string()),
-  /** Function handle of the app mutation to call when every delivery has finished. */
+
   onComplete: v.optional(v.string()),
   testMode: v.optional(v.boolean()),
   allowedPushHosts: v.optional(v.array(v.string())),
@@ -85,10 +96,11 @@ export const vSendOutcome = v.object({
     v.literal("permanent"),
     v.literal("gone"),
   ),
+  attempted: v.optional(v.boolean()),
   statusCode: v.optional(v.number()),
   errorKind: v.optional(v.string()),
   retryAfterMs: v.optional(v.number()),
-  detail: v.optional(v.string()),
+  error: v.optional(vWebPushError),
 });
 
 export type Urgency = Infer<typeof vUrgency>;
@@ -96,4 +108,5 @@ export type PushService = Infer<typeof vService>;
 export type SendOutcome = Infer<typeof vSendOutcome>;
 export type SendFields = Infer<typeof vSendFields>;
 export type WebPushSubscription = Infer<typeof vWebPushSubscription>;
+export type BatchResult = Infer<typeof vBatchResult>;
 export type NotificationResult = Infer<typeof vNotificationResult>;

@@ -6,3 +6,6 @@ dist/
 coverage/
 *.tsbuildinfo
 *.tgz
+.agents/skills/convex*/
+skills-lock.json
+**/_generated/ai/

@@ -1,7 +1,7 @@
 import { base64urlDecode } from "./base64url.js";
-import { classifyPushStatus, MAX_ERROR_DETAIL_CHARS } from "./classify.js";
+import { classifyPushStatus } from "./classify.js";
 import { encryptAes128gcm } from "./encrypt.js";
-import { isWebPushError } from "./errors.js";
+import { isWebPushError, webPushError } from "./errors.js";
 import { checkPushEndpoint } from "./push.js";
 import type { SendOutcome, Urgency } from "./validators.js";
 import { signVapidJwt, vapidAuthorization } from "./vapid.js";
@@ -12,7 +12,7 @@ export type SendWebPushInput = {
   endpoint: string;
   p256dh: string;
   auth: string;
-  /** Null sends an empty "tickle" push with no body. */
+
   payload: Uint8Array | null;
   ttl: number;
   urgency: Urgency;
@@ -23,27 +23,24 @@ export type SendWebPushInput = {
 };
 
 function failure(error: unknown): SendOutcome {
-  if (isWebPushError(error)) {
-    // "WEB_PUSH_INVALID_SUBSCRIPTION" becomes the delivery errorKind "invalid_subscription".
-    const errorKind = error.data.code.slice("WEB_PUSH_".length).toLowerCase();
-    return { kind: "permanent", errorKind, detail: error.data.message };
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  const hint = /not implemented|not supported/i.test(message)
-    ? " The Convex backend may not support this WebCrypto operation; upgrade it and run diagnostics.selfTest."
-    : "";
+  const data = isWebPushError(error)
+    ? error.data
+    : webPushError("WEB_PUSH_CRYPTO_UNSUPPORTED").data;
   return {
     kind: "permanent",
-    errorKind: "crypto_error",
-    detail: `${message.slice(0, 120)}${hint}`,
+    errorKind: data.code.slice("WEB_PUSH_".length).toLowerCase(),
+    error: data,
   };
 }
 
-/** Encrypts, signs and POSTs one push message, then classifies the result. Never throws. */
 export async function sendWebPush(input: SendWebPushInput): Promise<SendOutcome> {
   const check = checkPushEndpoint(input.endpoint, input.allowedPushHosts);
   if (!check.ok)
-    return { kind: "permanent", errorKind: "endpoint_not_allowed", detail: check.reason };
+    return {
+      kind: "permanent",
+      errorKind: "endpoint_not_allowed",
+      error: webPushError("WEB_PUSH_INVALID_SUBSCRIPTION").data,
+    };
 
   const headers: Record<string, string> = {
     TTL: String(input.ttl),
@@ -87,19 +84,17 @@ export async function sendWebPush(input: SendWebPushInput): Promise<SendOutcome>
       response.headers.get("Retry-After"),
       input.now ?? Date.now(),
     );
-    if (outcome.kind === "sent") {
-      await response.body?.cancel();
-    } else {
-      const text = await response.text().catch(() => "");
-      if (text) outcome.detail = text.slice(0, MAX_ERROR_DETAIL_CHARS);
-    }
-    return outcome;
-  } catch (error) {
+    await response.body?.cancel().catch(() => {});
+    if (outcome.kind !== "sent")
+      outcome.error = webPushError("WEB_PUSH_SERVICE_FAILED", response.status).data;
+    return { ...outcome, attempted: true };
+  } catch {
     const aborted = controller.signal.aborted;
     return {
       kind: "retryable",
+      attempted: true,
       errorKind: aborted ? "timeout" : "network_error",
-      detail: aborted ? "Push service did not respond in time" : String(error).slice(0, 120),
+      error: webPushError("WEB_PUSH_SERVICE_FAILED").data,
     };
   } finally {
     clearTimeout(timer);

@@ -1,18 +1,3 @@
-# 0004: One bounded transaction per batch call
+# 0004: Batch transaction bounds
 
-## Context
-
-`sendNotificationBatch` used to loop over 25-user chunks of `runMutation`. In a mutation context
-every chunk shared one transaction, so the work was unbounded.
-
-## Decision
-
-The client makes exactly one `notifications.sendBatch` call, for at most 100 users. That call
-inserts at most 150 deliveries, then schedules `continueBatch` for the remaining users. A larger
-audience is sent from an action, one call per slice of 100 users; each call is its own transaction
-there. More than 100 users throws `WEB_PUSH_BATCH_TOO_LARGE`.
-
-## Consequences
-
-No client-side chunking and no type-level action requirement. `done` may be false on return;
-`getBatch` reports progress.
+A client batch call invokes one component mutation and accepts at most 100 supplied user IDs. Each step examines at most 150 subscriptions, including expired rows, and reserves room for 50 before starting another user. Scheduled mutations continue deferred users. Test mode is fixed when the batch is created; each step rechecks configuration and the public-key fingerprint. Apps send larger audiences from actions in calls of at most 100 IDs.

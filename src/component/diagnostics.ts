@@ -3,7 +3,7 @@ import { base64urlDecode, base64urlEncode, bytesEqual, utf8Encode } from "../sha
 import { encryptAes128gcmWithFixedKeys } from "../shared/encrypt.js";
 import { sha256Hex } from "../shared/sha256.js";
 import { RFC8291_VECTOR } from "../shared/vectors.js";
-import { MAX_ERROR_DETAIL_CHARS } from "../shared/classify.js";
+import { webPushError } from "../shared/errors.js";
 import { isTestMode } from "../shared/config.js";
 import {
   generateVapidKeys,
@@ -20,9 +20,8 @@ async function check(name: string, fn: () => Promise<void>) {
   try {
     await fn();
     return { name, ok: true };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { name, ok: false, error: message.slice(0, MAX_ERROR_DETAIL_CHARS) };
+  } catch {
+    return { name, ok: false, error: webPushError("WEB_PUSH_CRYPTO_UNSUPPORTED").data.message };
   }
 }
 
@@ -30,16 +29,12 @@ function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-/**
- * Exercises every WebCrypto operation the pipeline needs inside the real Convex runtime. Run it
- * once after deploying. Reports per-operation success; never returns key material.
- */
 export const selfTest = action({
   args: {},
   returns: v.object({
     ok: v.boolean(),
     testMode: v.boolean(),
-    /** Whether the VAPID env is complete and well formed. `problem` never contains key material. */
+
     config: v.object({ configured: v.boolean(), problem: v.optional(v.string()) }),
     checks: v.array(vCheck),
   }),

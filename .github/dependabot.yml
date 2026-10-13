@@ -6,6 +6,7 @@ updates:
       interval: weekly
     cooldown:
       default-days: 3
+    commit-message: { prefix: chore, include: scope }
     open-pull-requests-limit: 5
     groups:
       compatible:
@@ -16,6 +17,7 @@ updates:
       interval: weekly
     cooldown:
       default-days: 3
+    commit-message: { prefix: chore, include: scope }
     open-pull-requests-limit: 5
     groups:
       compatible:

@@ -125,7 +125,7 @@ test("caps the combined delete count per transaction and continues later", async
   const left = await t.run((ctx) =>
     ctx.db
       .query("deliveries")
-      .withIndex("by_status_createdAt", (q) => q.eq("status", "sent"))
+      .withIndex("by_status_and_createdAt", (q) => q.eq("status", "sent"))
       .take(700),
   );
   expect(left).toHaveLength(0);
@@ -137,6 +137,7 @@ test("removes finished batch records after retention", async () => {
     t.run((ctx) =>
       ctx.db.insert("batches", {
         userIds: [],
+        vapidPublicKeyHash: "none",
         nextIndex: 0,
         notificationIds: [],
         send: { payload: "x" },

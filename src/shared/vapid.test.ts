@@ -66,11 +66,12 @@ test("rejects a tampered token and a different key", async () => {
   expect(await verifyVapidJwt("not-a-jwt", keys.publicKey)).toBeNull();
 });
 
-test("left-pads a private scalar that lost leading zeros", async () => {
+test("rejects a private scalar with a missing byte", async () => {
   const keys = await generateVapidKeys();
-  const d = base64urlDecode(keys.privateKey);
-  const short = base64urlEncode(d[0] === 0 ? d.slice(1) : d);
-  await expect(importVapidPrivateKey(keys.publicKey, short)).resolves.toBeDefined();
+  const short = base64urlEncode(base64urlDecode(keys.privateKey).slice(1));
+  await expect(importVapidPrivateKey(keys.publicKey, short)).rejects.toMatchObject({
+    data: { code: "WEB_PUSH_INVALID_VAPID_KEY" },
+  });
 });
 
 test("rejects malformed keys without echoing them", async () => {
@@ -121,7 +122,7 @@ test("readVapidConfig reports the first problem and never echoes key material", 
   const tooLong = readVapidConfig({ ...good, VAPID_PRIVATE_KEY: secret });
   expect(tooLong).toMatchObject({
     ok: false,
-    problem: "VAPID_PRIVATE_KEY must be a 32-byte scalar",
+    problem: "VAPID_PRIVATE_KEY must decode to exactly 32 bytes",
   });
   expect(JSON.stringify(tooLong)).not.toContain(secret);
   expect(readVapidConfig({ ...good, VAPID_SUBJECT: undefined })).toEqual({

@@ -1,3 +1,4 @@
+import { webPushError } from "../shared/errors.js";
 import { v } from "convex/values";
 import { base64urlDecode } from "../shared/base64url.js";
 import { readVapidConfig, importVapidPrivateKey, vapidKeyFingerprint } from "../shared/vapid.js";
@@ -16,7 +17,11 @@ export const run = internalAction({
 
     const config = readVapidConfig(env);
     if (!config.ok) {
-      return { kind: "permanent", errorKind: "vapid_not_configured", detail: config.problem };
+      return {
+        kind: "permanent",
+        errorKind: "vapid_not_configured",
+        error: webPushError("WEB_PUSH_NOT_CONFIGURED").data,
+      };
     }
     if (
       job.vapidPublicKeyHash !== "none" &&
@@ -25,7 +30,7 @@ export const run = internalAction({
       return {
         kind: "gone",
         errorKind: "vapid_key_mismatch",
-        detail: "Subscription was created under a different VAPID key",
+        error: webPushError("WEB_PUSH_INVALID_VAPID_KEY").data,
       };
     }
 
@@ -36,7 +41,7 @@ export const run = internalAction({
       return {
         kind: "permanent",
         errorKind: "invalid_vapid_key",
-        detail: "VAPID key pair could not be imported",
+        error: webPushError("WEB_PUSH_INVALID_VAPID_KEY").data,
       };
     }
 

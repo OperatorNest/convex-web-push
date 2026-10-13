@@ -8,9 +8,14 @@ import {
   type PaginationOptions,
 } from "convex/server";
 import type { ComponentApi } from "../component/_generated/component.js";
-import { base64urlEncode } from "../shared/base64url.js";
-import { serializeNotification, type PushNotification } from "../shared/notification.js";
+import { base64urlEncode, utf8ByteLength } from "../shared/base64url.js";
+import {
+  assertPayloadSize,
+  serializeNotification,
+  type PushNotification,
+} from "../shared/notification.js";
 import type {
+  BatchResult,
   NotificationResult,
   SendFields,
   Urgency,
@@ -25,40 +30,37 @@ export {
   type WebPushErrorCode,
   type WebPushErrorData,
 } from "../shared/errors.js";
-export { vNotificationResult, vWebPushSubscription } from "../shared/validators.js";
+export { vBatchResult, vNotificationResult, vWebPushSubscription } from "../shared/validators.js";
 export type { PushNotification } from "../shared/notification.js";
-export type { NotificationResult, Urgency, WebPushSubscription };
+export type { BatchResult, NotificationResult, Urgency, WebPushSubscription };
 
 type RunQuery = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
 type RunMutation = Pick<GenericMutationCtx<GenericDataModel>, "runMutation">;
 type RunAction = Pick<GenericActionCtx<GenericDataModel>, "runAction">;
 
-/** Component document ids cross the component boundary as plain strings. */
 export type NotificationId = string;
 
 export type WebPushOptions = {
-  /**
-   * Opt in to test mode: record sends without calling push services. Off by default. Without it
-   * (and without `WEB_PUSH_TEST_MODE=true` in the component env), sending with missing or invalid
-   * VAPID settings throws `WEB_PUSH_NOT_CONFIGURED`.
-   */
   testMode?: boolean | undefined;
-  /** Extra push service hosts to allow, exact (`push.example.com`) or wildcard (`*.example.com`). */
+
   allowedPushHosts?: string[] | undefined;
 };
 
 export type SendOptions = {
-  /** Seconds the push service may hold the message. Default 86400, clamped to 0..2419200. */
   ttl?: number | undefined;
   urgency?: Urgency | undefined;
-  /** Replaces a pending message with the same topic: 1-32 characters of A-Z a-z 0-9 _ -. */
+
   topic?: string | undefined;
-  /** Repeating a send with the same key for the same user returns the original notification. */
+
   idempotencyKey?: string | undefined;
-  /** Internal mutation in your app, called with {@link NotificationResult} once every delivery finished. */
+
   onComplete?:
     | FunctionReference_future<"mutation", "internal", NotificationResult, unknown>
     | undefined;
+};
+
+export type BatchSendOptions = Omit<SendOptions, "onComplete"> & {
+  onComplete?: FunctionReference_future<"mutation", "internal", BatchResult, unknown> | undefined;
 };
 
 export class WebPush {
@@ -67,125 +69,195 @@ export class WebPush {
     private readonly options: WebPushOptions = {},
   ) {}
 
-  /** Stores a browser subscription for `userId`. Throws `WEB_PUSH_INVALID_SUBSCRIPTION` if invalid. */
   recordSubscription(
     ctx: RunMutation,
     args: { userId: string; subscription: WebPushSubscription; userAgent?: string | undefined },
   ) {
-    return ctx.runMutation(this.component.subscriptions.record, {
-      ...args,
-      ...(this.options.allowedPushHosts !== undefined && {
+    return ctx.runMutation(
+      this.component.subscriptions.record,
+      definedFields({
+        userId: args.userId,
+        subscription: {
+          endpoint: args.subscription.endpoint,
+          expirationTime: args.subscription.expirationTime,
+          keys: { p256dh: args.subscription.keys.p256dh, auth: args.subscription.keys.auth },
+        },
+        userAgent: args.userAgent,
         allowedPushHosts: this.options.allowedPushHosts,
       }),
-    });
+    );
   }
 
-  /**
-   * Removes one subscription. The endpoint is a capability URL, so pass `userId` to remove it only
-   * when it belongs to that user. Returns whether a subscription was removed.
-   */
-  removeSubscription(ctx: RunMutation, args: { endpoint: string; userId?: string | undefined }) {
-    return ctx.runMutation(this.component.subscriptions.remove, args);
+  removeSubscription(ctx: RunMutation, args: { endpoint: string; userId: string }) {
+    return ctx.runMutation(
+      this.component.subscriptions.remove,
+      definedFields({ endpoint: args.endpoint, userId: args.userId }),
+    );
   }
 
-  /**
-   * Removes one bounded batch of the user's subscriptions. `removed` counts this batch; when
-   * `done` is false, scheduled batches delete the rest.
-   */
   removeAllForUser(ctx: RunMutation, args: { userId: string }) {
-    return ctx.runMutation(this.component.subscriptions.removeAllForUser, args);
+    return ctx.runMutation(
+      this.component.subscriptions.removeAllForUser,
+      definedFields({ userId: args.userId }),
+    );
   }
 
-  /** Sends a structured notification to every active subscription of `userId`. Null if there are none. */
   async sendNotification(
     ctx: RunMutation,
     args: { userId: string; notification: PushNotification; options?: SendOptions | undefined },
   ) {
-    return ctx.runMutation(this.component.notifications.send, {
-      userId: args.userId,
-      ...(await this.sendFields(serializeNotification(args.notification), args.options)),
-    });
+    const fields = await this.sendFields(serializeNotification(args.notification), args.options);
+    return ctx.runMutation(
+      this.component.notifications.send,
+      definedFields({
+        userId: args.userId,
+        payload: fields.payload,
+        payloadEncoding: fields.payloadEncoding,
+        ttl: fields.ttl,
+        urgency: fields.urgency,
+        topic: fields.topic,
+        idempotencyKey: fields.idempotencyKey,
+        onComplete: fields.onComplete,
+        testMode: fields.testMode,
+        allowedPushHosts: fields.allowedPushHosts,
+      }),
+    );
   }
 
-  /**
-   * Sends the same notification to up to 100 users in one bounded transaction. When the delivery
-   * budget of that transaction runs out, a scheduled continuation handles the remaining users, so
-   * `done` can be false; follow progress with `getBatch`. For more than 100 users, call this from
-   * an action once per slice of 100 users, because each call is its own transaction there.
-   */
   async sendNotificationBatch(
     ctx: RunMutation,
-    args: { userIds: string[]; notification: PushNotification; options?: SendOptions | undefined },
+    args: {
+      userIds: string[];
+      notification: PushNotification;
+      options?: BatchSendOptions | undefined;
+    },
   ) {
-    return ctx.runMutation(this.component.notifications.sendBatch, {
-      userIds: args.userIds,
-      ...(await this.sendFields(serializeNotification(args.notification), args.options)),
-    });
+    const fields = await this.sendFields(serializeNotification(args.notification), args.options);
+    return ctx.runMutation(
+      this.component.notifications.sendBatch,
+      definedFields({
+        userIds: args.userIds,
+        payload: fields.payload,
+        payloadEncoding: fields.payloadEncoding,
+        ttl: fields.ttl,
+        urgency: fields.urgency,
+        topic: fields.topic,
+        idempotencyKey: fields.idempotencyKey,
+        onComplete: fields.onComplete,
+        testMode: fields.testMode,
+        allowedPushHosts: fields.allowedPushHosts,
+      }),
+    );
   }
 
-  /** Sends your own payload (string or bytes) for apps with a custom service worker. */
   async sendRaw(
     ctx: RunMutation,
     args: { userId: string; payload: string | Uint8Array; options?: SendOptions | undefined },
   ) {
+    assertPayloadSize(
+      typeof args.payload === "string" ? utf8ByteLength(args.payload) : args.payload.byteLength,
+    );
     const [payload, encoding] =
       typeof args.payload === "string"
         ? ([args.payload, undefined] as const)
         : ([base64urlEncode(args.payload), "base64url"] as const);
-    return ctx.runMutation(this.component.notifications.send, {
-      userId: args.userId,
-      ...(await this.sendFields(payload, args.options, encoding)),
-    });
+    const fields = await this.sendFields(payload, args.options, encoding);
+    return ctx.runMutation(
+      this.component.notifications.send,
+      definedFields({
+        userId: args.userId,
+        payload: fields.payload,
+        payloadEncoding: fields.payloadEncoding,
+        ttl: fields.ttl,
+        urgency: fields.urgency,
+        topic: fields.topic,
+        idempotencyKey: fields.idempotencyKey,
+        onComplete: fields.onComplete,
+        testMode: fields.testMode,
+        allowedPushHosts: fields.allowedPushHosts,
+      }),
+    );
   }
 
-  getNotification(ctx: RunQuery, args: { notificationId: NotificationId }) {
-    return ctx.runQuery(this.component.notifications.get, args);
+  getNotification(ctx: RunQuery, args: { notificationId: NotificationId; userId: string }) {
+    return ctx.runQuery(
+      this.component.notifications.get,
+      definedFields({ notificationId: args.notificationId, userId: args.userId }),
+    );
   }
 
-  /** Progress of a batch started by `sendNotificationBatch`. */
   getBatch(ctx: RunQuery, args: { batchId: string }) {
-    return ctx.runQuery(this.component.notifications.getBatch, args);
+    return ctx.runQuery(
+      this.component.notifications.getBatch,
+      definedFields({ batchId: args.batchId }),
+    );
   }
 
-  getDeliveries(ctx: RunQuery, args: { notificationId: NotificationId }) {
-    return ctx.runQuery(this.component.deliveries.listForNotification, args);
+  getDeliveries(ctx: RunQuery, args: { notificationId: NotificationId; userId: string }) {
+    return ctx.runQuery(
+      this.component.deliveries.listForNotification,
+      definedFields({ notificationId: args.notificationId, userId: args.userId }),
+    );
   }
 
   getNotificationsForUser(
     ctx: RunQuery,
     args: { userId: string; paginationOpts: PaginationOptions },
   ) {
-    return ctx.runQuery(this.component.notifications.listForUser, args);
+    return ctx.runQuery(
+      this.component.notifications.listForUser,
+      definedFields({
+        userId: args.userId,
+        paginationOpts: {
+          numItems: args.paginationOpts.numItems,
+          cursor: args.paginationOpts.cursor,
+          endCursor: args.paginationOpts.endCursor,
+
+          maximumRowsRead: args.paginationOpts.maximumRowsRead,
+          maximumBytesRead: args.paginationOpts.maximumBytesRead,
+        },
+      }),
+    );
   }
 
   getStatusForUser(ctx: RunQuery, args: { userId: string }) {
-    return ctx.runQuery(this.component.subscriptions.statusForUser, args);
+    return ctx.runQuery(
+      this.component.subscriptions.statusForUser,
+      definedFields({ userId: args.userId }),
+    );
   }
 
-  /** Pauses the user's active subscriptions. Returns how many were paused. */
   pauseNotifications(ctx: RunMutation, args: { userId: string }) {
-    return ctx.runMutation(this.component.subscriptions.pauseForUser, args);
+    return ctx.runMutation(
+      this.component.subscriptions.pauseForUser,
+      definedFields({ userId: args.userId }),
+    );
   }
 
-  /** Resumes the user's paused subscriptions. Returns how many were resumed. */
   resumeNotifications(ctx: RunMutation, args: { userId: string }) {
-    return ctx.runMutation(this.component.subscriptions.resumeForUser, args);
+    return ctx.runMutation(
+      this.component.subscriptions.resumeForUser,
+      definedFields({ userId: args.userId }),
+    );
   }
 
-  /** The VAPID public key to give browsers as `applicationServerKey`. Null when unset. */
   getPublicKey(ctx: RunQuery) {
-    return ctx.runQuery(this.component.config.getPublicKey, {});
+    return ctx.runQuery(this.component.config.getPublicKey, definedFields({}));
   }
 
-  /** Runs the WebCrypto self-test inside your deployment. Run it once after deploying. */
   selfTest(ctx: RunAction) {
-    return ctx.runAction(this.component.diagnostics.selfTest, {});
+    return ctx.runAction(this.component.diagnostics.selfTest, definedFields({}));
   }
 
-  /** Builds the component's send arguments, leaving out every option that is not set. */
-  private async sendFields(
+  private async sendFields<Result extends NotificationResult | BatchResult>(
     payload: string,
-    options: SendOptions | undefined,
+    options:
+      | (Omit<SendOptions, "onComplete"> & {
+          onComplete?:
+            | FunctionReference_future<"mutation", "internal", Result, unknown>
+            | undefined;
+        })
+      | undefined,
     payloadEncoding?: "base64url",
   ): Promise<SendFields> {
     return {
@@ -204,4 +276,9 @@ export class WebPush {
       }),
     };
   }
+}
+
+function definedFields<T extends object>(fields: T): T {
+  for (const key in fields) if (fields[key] === undefined) delete fields[key];
+  return fields;
 }

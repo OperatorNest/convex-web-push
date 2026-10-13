@@ -9,33 +9,41 @@ import {
   vService,
   vSubscriptionStatus,
   vUrgency,
+  vWebPushError,
 } from "../shared/validators.js";
 
 export default defineSchema({
+  subscriptionOwners: defineTable({ userId: v.string(), generation: v.number() }).index(
+    "by_userId",
+    ["userId"],
+  ),
   subscriptions: defineTable({
+    revision: v.number(),
+    generation: v.number(),
     userId: v.string(),
     endpoint: v.string(),
-    /** SHA-256 hex of the endpoint: the upsert key, since endpoints can be long. */
+
     endpointHash: v.string(),
     p256dh: v.string(),
     auth: v.string(),
     expirationTime: v.optional(v.number()),
-    /** Operator diagnostics, visible in the Convex dashboard. No API reads these four fields. */
+
     userAgent: v.optional(v.string()),
     service: vService,
-    /** Fingerprint of the VAPID public key at subscribe time, or "none" if it was not configured. */
+
     vapidPublicKeyHash: v.string(),
     status: vSubscriptionStatus,
     consecutiveFailures: v.number(),
     lastSuccessAt: v.optional(v.number()),
-    /** Diagnostics only. */
+
     lastFailureAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
     .index("by_endpointHash", ["endpointHash"])
-    .index("by_user_status", ["userId", "status"])
-    .index("by_status_updatedAt", ["status", "updatedAt"]),
+    .index("by_userId_and_generation", ["userId", "generation"])
+    .index("by_userId_and_status", ["userId", "status"])
+    .index("by_status_and_updatedAt", ["status", "updatedAt"]),
 
   notifications: defineTable({
     userId: v.string(),
@@ -47,40 +55,43 @@ export default defineSchema({
     counts: vCounts,
     testMode: v.optional(v.boolean()),
     allowedPushHosts: v.optional(v.array(v.string())),
-    /** Function handle of the app mutation to call when every delivery has finished. */
+
     onComplete: v.optional(v.string()),
     createdAt: v.number(),
   })
-    .index("by_user_createdAt", ["userId", "createdAt"])
-    .index("by_user_idempotencyKey", ["userId", "idempotencyKey"])
-    .index("by_status_createdAt", ["status", "createdAt"]),
+    .index("by_userId_and_createdAt", ["userId", "createdAt"])
+    .index("by_userId_and_idempotencyKey", ["userId", "idempotencyKey"])
+    .index("by_status_and_createdAt", ["status", "createdAt"]),
 
-  /** Progress of a `sendBatch` call whose fan-out continues across transactions. */
   batches: defineTable({
+    vapidPublicKeyHash: v.string(),
     userIds: v.array(v.string()),
     nextIndex: v.number(),
     notificationIds: v.array(v.id("notifications")),
     send: vSendFields,
+    onComplete: v.optional(v.string()),
+    errorCode: v.optional(vWebPushError.fields.code),
     status: vBatchStatus,
     createdAt: v.number(),
-  }).index("by_status_createdAt", ["status", "createdAt"]),
+  }).index("by_status_and_createdAt", ["status", "createdAt"]),
 
   deliveries: defineTable({
     notificationId: v.id("notifications"),
     subscriptionId: v.id("subscriptions"),
     userId: v.string(),
     status: vDeliveryStatus,
-    /** True when created in test mode: recorded, never sent to a push service. */
+
     testMode: v.optional(v.boolean()),
     attempts: v.number(),
+    subscriptionRevision: v.optional(v.number()),
     statusCode: v.optional(v.number()),
     errorKind: v.optional(v.string()),
-    /** Truncated push service response body, for debugging only. */
-    detail: v.optional(v.string()),
+
+    error: v.optional(vWebPushError),
     retryAfterMs: v.optional(v.number()),
     createdAt: v.number(),
     sentAt: v.optional(v.number()),
   })
-    .index("by_notification", ["notificationId"])
-    .index("by_status_createdAt", ["status", "createdAt"]),
+    .index("by_notificationId", ["notificationId"])
+    .index("by_status_and_createdAt", ["status", "createdAt"]),
 });

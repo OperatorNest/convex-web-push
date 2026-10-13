@@ -149,7 +149,7 @@ test("subscribe fails with a scope hint if the worker never activates", async ()
   const assertion = expect(pending).rejects.toMatchObject({
     data: {
       code: "WEB_PUSH_SERVICE_WORKER_FAILED",
-      message: expect.stringContaining("scope covers this page"),
+      message: expect.stringContaining("verify its scope"),
     },
   });
   await vi.advanceTimersByTimeAsync(10_001);
@@ -168,7 +168,10 @@ test("subscribe fails if the worker becomes redundant", async () => {
   await vi.waitFor(() => expect(worker.listening()).toBe(true));
   worker.transition("redundant");
   await expect(pending).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_SERVICE_WORKER_FAILED", message: expect.stringContaining("redundant") },
+    data: {
+      code: "WEB_PUSH_SERVICE_WORKER_FAILED",
+      message: expect.stringContaining("A service worker operation failed"),
+    },
   });
 });
 
@@ -178,4 +181,12 @@ test("browser failures are Web Push errors the guard recognises", async () => {
     (e: unknown) => e,
   );
   expect(isWebPushError(error)).toBe(true);
+});
+
+test("native registration failures become package errors", async () => {
+  stubBrowser(null);
+  vi.mocked(navigator.serviceWorker.register).mockRejectedValue(new Error("native failure"));
+  await expect(subscribe({ vapidPublicKey: VAPID_KEY })).rejects.toMatchObject({
+    data: { code: "WEB_PUSH_SERVICE_WORKER_FAILED" },
+  });
 });

@@ -37,7 +37,7 @@ test("records a subscription and upserts by endpoint", async () => {
   expect(first.created).toBe(true);
   const again = await t.mutation(api.subscriptions.record, { userId: "u1", subscription });
   expect(again).toEqual({ subscriptionId: first.subscriptionId, created: false });
-  const rows = await t.run((ctx) => ctx.db.query("subscriptions").collect());
+  const rows = await t.run((ctx) => ctx.db.query("subscriptions").take(10000));
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({
     service: "mozilla",
@@ -91,7 +91,7 @@ test("rejects malformed subscriptions and disallowed endpoints", async () => {
   await expect(record({ keys: { ...subscription.keys, auth: "***" } })).rejects.toMatchObject({
     data: { code: "WEB_PUSH_INVALID_SUBSCRIPTION" },
   });
-  expect(await t.run((ctx) => ctx.db.query("subscriptions").collect())).toHaveLength(0);
+  expect(await t.run((ctx) => ctx.db.query("subscriptions").take(10000))).toHaveLength(0);
 });
 
 test("allowedPushHosts extends the endpoint allowlist", async () => {
@@ -113,12 +113,12 @@ test("remove deletes by endpoint and reports whether it existed", async () => {
   const t = setupTest();
   const { subscription } = await makeSubscription();
   await t.mutation(api.subscriptions.record, { userId: "u1", subscription });
-  expect(await t.mutation(api.subscriptions.remove, { endpoint: subscription.endpoint })).toBe(
-    true,
-  );
-  expect(await t.mutation(api.subscriptions.remove, { endpoint: subscription.endpoint })).toBe(
-    false,
-  );
+  expect(
+    await t.mutation(api.subscriptions.remove, { endpoint: subscription.endpoint, userId: "u1" }),
+  ).toBe(true);
+  expect(
+    await t.mutation(api.subscriptions.remove, { endpoint: subscription.endpoint, userId: "u1" }),
+  ).toBe(false);
 });
 
 test("removeAllForUser removes every subscription of that user only", async () => {
@@ -143,7 +143,7 @@ test("pause and resume move subscriptions between states", async () => {
     subscriptions: 0,
     paused: 1,
   });
-  // Re-recording a paused subscription of the same user keeps the pause.
+
   await t.mutation(api.subscriptions.record, { userId: "u1", subscription });
   expect((await t.query(api.subscriptions.statusForUser, { userId: "u1" })).paused).toBe(1);
   expect(await t.mutation(api.subscriptions.resumeForUser, { userId: "u1" })).toBe(1);
@@ -177,7 +177,7 @@ test("keeps at most 50 live subscriptions per user by retiring the oldest", asyn
   const oldest = await t.run((ctx) =>
     ctx.db
       .query("subscriptions")
-      .withIndex("by_status_updatedAt", (q) => q.eq("status", "gone"))
+      .withIndex("by_status_and_updatedAt", (q) => q.eq("status", "gone"))
       .take(5),
   );
   expect(oldest).toHaveLength(1);
@@ -224,7 +224,7 @@ test("removeAllForUser removes more than one batch through scheduled continuatio
   const first = await t.mutation(api.subscriptions.removeAllForUser, { userId: "u1" });
   expect(first).toEqual({ removed: 100, done: false });
   await drain(t);
-  const rows = await t.run((ctx) => ctx.db.query("subscriptions").collect());
+  const rows = await t.run((ctx) => ctx.db.query("subscriptions").take(10000));
   expect(rows.map((r) => r.userId)).toEqual(["other"]);
 });
 

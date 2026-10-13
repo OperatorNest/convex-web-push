@@ -6,15 +6,12 @@ import { isWebPushError, type WebPushErrorCode } from "./shared/errors.js";
 import { generateVapidKeys } from "./shared/vapid.js";
 import schema from "./component/schema.js";
 
-/** Component modules for convex-test, without any test files. */
 const modules = import.meta.glob(["./component/**/*.ts", "!./component/**/*.test.ts"]);
 
 export type SetupOptions = {
-  /** Records sends without calling a push service. On unless you pass false. */
   testMode?: boolean;
 };
 
-/** Registers the component and its workpool. Pass `testMode: false` to exercise real sending. */
 export function setupTest(options: SetupOptions = {}) {
   if (options.testMode !== false) vi.stubEnv("WEB_PUSH_TEST_MODE", "true");
   const t = convexTest(schema, modules);
@@ -24,7 +21,6 @@ export function setupTest(options: SetupOptions = {}) {
 
 export type TestCtx = ReturnType<typeof setupTest>;
 
-/** Real test-only VAPID keys, with test mode off. Never use production credentials in tests. */
 export async function configureVapid(subject = "mailto:ops@example.com") {
   const keys = await generateVapidKeys();
   vi.stubEnv("VAPID_PUBLIC_KEY", keys.publicKey);
@@ -34,7 +30,6 @@ export async function configureVapid(subject = "mailto:ops@example.com") {
   return keys;
 }
 
-/** A browser subscription with fresh P-256 and auth material, plus the keys to decrypt pushes. */
 export async function makeSubscription(host = "fcm.googleapis.com", path = "/fcm/send/") {
   const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
     "deriveBits",
@@ -70,7 +65,6 @@ async function hkdf(secret: Uint8Array, salt: Uint8Array, info: Uint8Array, bits
   );
 }
 
-/** Independent RFC 8291 receiver used to check what the sender produced. */
 export async function decryptAes128gcm(
   body: Uint8Array,
   uaPrivate: CryptoKey,
@@ -109,13 +103,11 @@ export async function decryptAes128gcm(
   return record.slice(0, end - 1);
 }
 
-/** Narrows a value the test knows exists, with a clear failure instead of a non-null assertion. */
 export function required<T>(value: T | null | undefined, what = "value"): T {
   if (value === null || value === undefined) throw new Error(`Expected ${what} to exist`);
   return value;
 }
 
-/** Replaces `fetch`. Each call uses the next responder, repeating the last one. */
 export function stubFetch(...responders: (() => Response | Promise<Response>)[]) {
   let call = 0;
   const calls: { time: number; url: URL; init: RequestInit }[] = [];
@@ -128,9 +120,9 @@ export function stubFetch(...responders: (() => Response | Promise<Response>)[])
   return {
     mock,
     calls,
-    /** Request headers of call `n`, with case-insensitive lookup. */
+
     headers: (n = 0) => new Headers(required(calls[n], `fetch call ${n}`).init.headers),
-    /** Request body of call `n` as bytes, or null for a bodyless push. */
+
     body(n = 0) {
       const body = required(calls[n], `fetch call ${n}`).init.body;
       return body instanceof Uint8Array ? body : null;
@@ -138,14 +130,12 @@ export function stubFetch(...responders: (() => Response | Promise<Response>)[])
   };
 }
 
-/** A fake push service answer: 201 has no body, anything else says no. */
 export const respond = (status: number, headers?: Record<string, string>) => () =>
   new Response(status === 201 ? null : "push service says no", {
     status,
     ...(headers !== undefined && { headers }),
   });
 
-/** Asserts the promise rejects with a Web Push error carrying exactly this code. */
 export async function expectWebPushError(promise: Promise<unknown>, code: WebPushErrorCode) {
   const error = await promise.then(
     () => undefined,

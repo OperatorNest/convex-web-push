@@ -36,13 +36,31 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listForNotification: FunctionReference<
         "query",
         "internal",
-        { notificationId: string },
+        { notificationId: string; userId: string },
         Array<{
           _creationTime: number;
           _id: string;
           attempts: number;
           createdAt: number;
-          detail?: string;
+          error?: {
+            code:
+              | "WEB_PUSH_NOT_CONFIGURED"
+              | "WEB_PUSH_INVALID_ARGUMENT"
+              | "WEB_PUSH_INVALID_SUBSCRIPTION"
+              | "WEB_PUSH_INVALID_PAYLOAD"
+              | "WEB_PUSH_PAYLOAD_TOO_LARGE"
+              | "WEB_PUSH_INVALID_TOPIC"
+              | "WEB_PUSH_BATCH_TOO_LARGE"
+              | "WEB_PUSH_INVALID_VAPID_KEY"
+              | "WEB_PUSH_CRYPTO_UNSUPPORTED"
+              | "WEB_PUSH_UNSUPPORTED"
+              | "WEB_PUSH_PERMISSION_DENIED"
+              | "WEB_PUSH_SERVICE_WORKER_FAILED"
+              | "WEB_PUSH_BROWSER_FAILED"
+              | "WEB_PUSH_SERVICE_FAILED";
+            message: string;
+            providerStatus?: number;
+          };
           errorKind?: string;
           notificationId: string;
           retryAfterMs?: number;
@@ -50,6 +68,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           status: "queued" | "sending" | "sent" | "failed" | "gone" | "retry";
           statusCode?: number;
           subscriptionId: string;
+          subscriptionRevision?: number;
           testMode?: boolean;
           userId: string;
         }>,
@@ -74,7 +93,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       get: FunctionReference<
         "query",
         "internal",
-        { notificationId: string },
+        { notificationId: string; userId: string },
         {
           _creationTime: number;
           _id: string;
@@ -106,9 +125,24 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { batchId: string },
         {
+          errorCode?:
+            | "WEB_PUSH_NOT_CONFIGURED"
+            | "WEB_PUSH_INVALID_ARGUMENT"
+            | "WEB_PUSH_INVALID_SUBSCRIPTION"
+            | "WEB_PUSH_INVALID_PAYLOAD"
+            | "WEB_PUSH_PAYLOAD_TOO_LARGE"
+            | "WEB_PUSH_INVALID_TOPIC"
+            | "WEB_PUSH_BATCH_TOO_LARGE"
+            | "WEB_PUSH_INVALID_VAPID_KEY"
+            | "WEB_PUSH_CRYPTO_UNSUPPORTED"
+            | "WEB_PUSH_UNSUPPORTED"
+            | "WEB_PUSH_PERMISSION_DENIED"
+            | "WEB_PUSH_SERVICE_WORKER_FAILED"
+            | "WEB_PUSH_BROWSER_FAILED"
+            | "WEB_PUSH_SERVICE_FAILED";
           notificationIds: Array<string>;
           processed: number;
-          status: "running" | "done";
+          status: "running" | "done" | "failed";
           total: number;
         } | null,
         Name
@@ -227,7 +261,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       remove: FunctionReference<
         "mutation",
         "internal",
-        { endpoint: string; userId?: string },
+        { endpoint: string; userId: string },
         boolean,
         Name
       >;

@@ -6,7 +6,7 @@ body:
     id: package_version
     attributes:
       label: Package version
-      placeholder: e.g. 0.2.1, or commit SHA for an unreleased checkout
+      placeholder: 0.3.0, or an unreleased commit SHA
     validations:
       required: true
   - type: input
@@ -32,28 +32,28 @@ body:
     id: browser_version
     attributes:
       label: Browser and version
-      description: Provide when relevant; leave blank if not applicable or unavailable.
+      description: Include when relevant.
     validations:
       required: false
   - type: input
     id: operating_system
     attributes:
       label: Operating system and version
-      description: Provide when relevant; leave blank if not applicable or unavailable.
+      description: Include when relevant.
     validations:
       required: false
   - type: input
     id: push_service
     attributes:
       label: Push service
-      description: Provide when relevant; for example, the browser vendor's push service. Leave blank if not applicable or unavailable.
+      description: Name the browser vendor’s push service.
     validations:
       required: false
   - type: dropdown
     id: permission_state
     attributes:
       label: Notification permission state
-      description: Provide when relevant; leave blank if not applicable or unavailable.
+      description: Include when relevant.
       options: [granted, denied, default, not requested, unknown]
     validations:
       required: false
@@ -61,7 +61,7 @@ body:
     id: service_worker_registered
     attributes:
       label: Is the service worker registered?
-      description: Provide when relevant; leave blank if not applicable or unavailable.
+      description: Include when relevant.
       options: ["Yes", "No", "Unknown"]
     validations:
       required: false

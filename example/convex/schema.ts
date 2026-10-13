@@ -1,9 +1,9 @@
-import { vNotificationResult } from "@operatornest/convex-web-push";
+import { vBatchResult, vNotificationResult } from "@operatornest/convex-web-push";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  /** Written by the `onComplete` callback so the app can see how a send ended. */
+  batchResults: defineTable(vBatchResult).index("by_batchId", ["batchId"]),
   notificationResults: defineTable({
     notificationId: v.string(),
     userId: v.string(),

@@ -4,10 +4,9 @@ Read [README](README.md) and [AGENTS.md](AGENTS.md) first. Deviations from the c
 
 ## Setup
 
-Development uses Node 26 and pnpm 12 through mise; consumers need Node 22.19 or newer.
+Development uses Node 24 and pnpm 12 through mise; consumers need Node 24 or newer.
 
-In a fresh checkout, mise installs the pinned tools and pnpm installs frozen dependencies. Initialize
-the anonymous local Convex deployment before generating bindings:
+In a fresh checkout:
 
 ```sh
 mise trust && mise install
@@ -22,15 +21,19 @@ configure a cloud deployment for development.
 ## Checks
 
 ```sh
-pnpm check     # format, build, lint, typecheck, knip, tests with coverage thresholds
-pnpm smoke     # real Convex runtime against the local backend
+pnpm check
+pnpm smoke
 ```
 
 Run `pnpm smoke` for any change to component functions, schema or shared runtime code:
 `convex-test` accepts things the runtime rejects (for example `.paginate()` in a component).
 
-## What a good change looks like
+## Change requirements
 
+- Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
+  (`feat:`, `fix:`, `docs:`, `test:`, `chore:`); a breaking change adds `!` after the type.
+- Until 1.0.0, a breaking change ships without compatibility code, deprecation periods or data
+  migrations; its changeset is a `minor` bump that states what breaks.
 - Public component functions have `args` and `returns` validators; reads are bounded and indexed.
 - Errors on caller-reachable paths come from `webPushError` in `src/shared/errors.ts`; add new
   codes there and to the README table.

@@ -1,7 +1,4 @@
-/**
- * Service worker handlers for the payload shape produced by `WebPush.sendNotification`.
- * Written against minimal structural types so it needs neither the DOM nor WebWorker libs.
- */
+import { webPushError } from "../shared/errors.js";
 
 export type PushPayload = {
   title?: string;
@@ -20,11 +17,10 @@ export type PushPayload = {
 };
 
 export type PushHandlerOptions = {
-  /** Title when the push carries no title. Default "Notification". */
   defaultTitle?: string;
   defaultIcon?: string;
   defaultBadge?: string;
-  /** Where a click goes when the payload has no `url`. Default "/". */
+
   defaultUrl?: string;
 };
 
@@ -45,10 +41,13 @@ type ClickEventLike = {
 };
 
 type Scope = {
-  addEventListener(type: string, listener: (event: never) => void): void;
+  addEventListener(type: string, listener: (event: unknown) => void): void;
   registration: { showNotification(title: string, options?: object): Promise<void> };
   clients: {
-    matchAll(options: { type: "window"; includeUncontrolled: boolean }): Promise<ClientLike[]>;
+    matchAll(options: {
+      type: "window";
+      includeUncontrolled: boolean;
+    }): Promise<readonly ClientLike[]>;
     openWindow(url: string): Promise<unknown>;
   };
   location: { origin: string };
@@ -59,9 +58,7 @@ export function parsePushPayload(data: PushEventLike["data"]): PushPayload {
   try {
     const parsed: unknown = data.json();
     if (parsed && typeof parsed === "object") return parsed;
-  } catch {
-    // Not JSON: fall through to plain text.
-  }
+  } catch {}
   try {
     return { body: data.text() };
   } catch {
@@ -88,50 +85,111 @@ export function buildNotification(payload: PushPayload, options: PushHandlerOpti
   };
 }
 
-/** Resolves the click target, falling back to `fallback` for cross-origin or invalid URLs. */
 export function resolveClickUrl(data: unknown, origin: string, fallback = "/"): string {
-  const raw: unknown =
-    typeof data === "object" && data !== null && "url" in data ? data.url : undefined;
   try {
-    const url = new URL(typeof raw === "string" ? raw : fallback, origin);
-    return url.origin === origin ? url.href : new URL(fallback, origin).href;
+    const root = new URL("/", origin);
+    const defaultUrl = new URL(fallback, root);
+    const safeFallback = defaultUrl.origin === root.origin ? defaultUrl : root;
+    const raw: unknown =
+      typeof data === "object" && data !== null && "url" in data ? data.url : undefined;
+    const url = new URL(typeof raw === "string" ? raw : safeFallback.href, root);
+    return url.origin === root.origin ? url.href : safeFallback.href;
   } catch {
-    return new URL("/", origin).href;
+    try {
+      return new URL("/", origin).href;
+    } catch {
+      throw webPushError("WEB_PUSH_SERVICE_WORKER_FAILED");
+    }
   }
 }
 
-/** Registers `push` and `notificationclick` handlers. Call it at the top level of your worker. */
-export function registerPushHandlers(self: object, options: PushHandlerOptions = {}): void {
-  // The real ServiceWorkerGlobalScope satisfies this structural subset.
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the real ServiceWorkerGlobalScope satisfies this structural subset
-  const scope = self as Scope;
-  scope.addEventListener("push", (event: PushEventLike) => {
-    const { title, options: notification } = buildNotification(
-      parsePushPayload(event.data),
-      options,
-    );
-    event.waitUntil(scope.registration.showNotification(title, notification));
-  });
+export function registerPushHandlers(scope: Scope, options: PushHandlerOptions = {}): void {
+  try {
+    scope.addEventListener("push", (value: unknown) => {
+      if (!isPushEvent(value)) throw webPushError("WEB_PUSH_SERVICE_WORKER_FAILED");
+      const event = value;
+      const { title, options: notification } = buildNotification(
+        parsePushPayload(event.data),
+        options,
+      );
+      event.waitUntil(
+        workerOperation(() => scope.registration.showNotification(title, notification)),
+      );
+    });
 
-  scope.addEventListener("notificationclick", (event: ClickEventLike) => {
-    event.notification.close();
-    const target = resolveClickUrl(
-      event.notification.data,
-      scope.location.origin,
-      options.defaultUrl,
-    );
-    event.waitUntil(
-      (async () => {
-        const windows = await scope.clients.matchAll({ type: "window", includeUncontrolled: true });
-        const exact = windows.find((client) => client.url === target);
-        if (exact) return exact.focus();
-        const any = windows[0];
-        if (any) {
-          await any.navigate?.(target);
-          return any.focus();
-        }
-        return scope.clients.openWindow(target);
-      })(),
-    );
-  });
+    scope.addEventListener("notificationclick", (value: unknown) => {
+      if (!isClickEvent(value)) throw webPushError("WEB_PUSH_SERVICE_WORKER_FAILED");
+      const event = value;
+      event.waitUntil(
+        workerOperation(async () => {
+          event.notification.close();
+          const target = resolveClickUrl(
+            event.notification.data,
+            scope.location.origin,
+            options.defaultUrl,
+          );
+          const windows = await scope.clients.matchAll({
+            type: "window",
+            includeUncontrolled: true,
+          });
+          const exact = windows.find((client) => client.url === target);
+          if (exact) return exact.focus();
+          const any = windows[0];
+          if (any) {
+            await any.navigate?.(target);
+            return any.focus();
+          }
+          return scope.clients.openWindow(target);
+        }),
+      );
+    });
+  } catch {
+    throw webPushError("WEB_PUSH_SERVICE_WORKER_FAILED");
+  }
+}
+
+async function workerOperation<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch {
+    throw webPushError("WEB_PUSH_SERVICE_WORKER_FAILED");
+  }
+}
+
+function isPushEvent(value: unknown): value is PushEventLike {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("waitUntil" in value) ||
+    typeof value.waitUntil !== "function" ||
+    !("data" in value)
+  )
+    return false;
+  const data = value.data;
+  return (
+    data === null ||
+    (typeof data === "object" &&
+      data !== null &&
+      "json" in data &&
+      typeof data.json === "function" &&
+      "text" in data &&
+      typeof data.text === "function")
+  );
+}
+function isClickEvent(value: unknown): value is ClickEventLike {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("waitUntil" in value) ||
+    typeof value.waitUntil !== "function" ||
+    !("notification" in value)
+  )
+    return false;
+  const notification = value.notification;
+  return (
+    typeof notification === "object" &&
+    notification !== null &&
+    "close" in notification &&
+    typeof notification.close === "function"
+  );
 }

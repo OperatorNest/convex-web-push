@@ -14,7 +14,7 @@ const K = new Uint32Array([
 ]);
 
 const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
-/** Typed-array reads are `number | undefined` under noUncheckedIndexedAccess; indexes here are in range. */
+
 const at = (words: Uint32Array, index: number) => words[index] ?? 0;
 
 export function sha256(data: Uint8Array): Uint8Array<ArrayBuffer> {

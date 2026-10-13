@@ -1,17 +1,16 @@
-import { vNotificationResult, vWebPushSubscription, WebPush } from "@operatornest/convex-web-push";
+import {
+  vBatchResult,
+  vNotificationResult,
+  vWebPushSubscription,
+  WebPush,
+} from "@operatornest/convex-web-push";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api.js";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server.js";
 
-// Test mode is opt-in: set WEB_PUSH_TEST_MODE=true on the deployment, or use a client like this
-// one, which records sends without ever calling a push service.
 const webPush = new WebPush(components.webPush);
 const webPushTest = new WebPush(components.webPush, { testMode: true });
-
-// Server-side operations. Every function here is internal, so a browser cannot call them with an
-// arbitrary `userId`. Call them from your own code (other functions, crons, webhooks) after you
-// have decided who may notify whom. The public, user-scoped functions live in example.ts.
 
 const vCounts = v.object({
   queued: v.number(),
@@ -48,7 +47,7 @@ export const saveSubscription = internalMutation({
 });
 
 export const removeSubscription = internalMutation({
-  args: { endpoint: v.string(), userId: v.optional(v.string()) },
+  args: { endpoint: v.string(), userId: v.string() },
   returns: v.boolean(),
   handler: (ctx, args) => webPush.removeSubscription(ctx, args),
 });
@@ -95,7 +94,6 @@ export const notifyInTestMode = internalMutation({
     webPushTest.sendNotification(ctx, { userId, notification: { title } }),
 });
 
-/** For apps with their own service worker: the payload is yours, not the bundled shape. */
 export const notifyRaw = internalMutation({
   args: { userId: v.string(), payload: v.union(v.string(), v.bytes()) },
   returns: v.union(v.string(), v.null()),
@@ -106,7 +104,6 @@ export const notifyRaw = internalMutation({
     }),
 });
 
-/** At most 100 users per call. From an action, call it once per slice of 100 for larger lists. */
 export const broadcast = internalMutation({
   args: { userIds: v.array(v.string()), title: v.string(), body: v.optional(v.string()) },
   returns: v.object({
@@ -116,15 +113,20 @@ export const broadcast = internalMutation({
     ),
     done: v.boolean(),
   }),
-  handler: (ctx, { userIds, ...notification }) =>
-    webPush.sendNotificationBatch(ctx, { userIds, notification }),
+  handler: (ctx, { userIds, ...notification }): ReturnType<WebPush["sendNotificationBatch"]> =>
+    webPush.sendNotificationBatch(ctx, {
+      userIds,
+      notification,
+      options: { onComplete: internal.results.onBatchComplete },
+    }),
 });
 
 export const batchProgress = internalQuery({
   args: { batchId: v.string() },
   returns: v.union(
     v.object({
-      status: v.union(v.literal("running"), v.literal("done")),
+      status: v.union(v.literal("running"), v.literal("done"), v.literal("failed")),
+      errorCode: vBatchResult.fields.errorCode,
       total: v.number(),
       processed: v.number(),
       notificationIds: v.array(v.string()),
@@ -158,7 +160,7 @@ export const notifications = internalQuery({
 });
 
 export const notification = internalQuery({
-  args: { notificationId: v.string() },
+  args: { notificationId: v.string(), userId: v.string() },
   returns: v.union(vNotificationSummary, v.null()),
   handler: async (ctx, args) => {
     const n = await webPush.getNotification(ctx, args);
@@ -177,7 +179,7 @@ function summarizeDelivery(d: DeliveryRow) {
 }
 
 export const deliveries = internalQuery({
-  args: { notificationId: v.string() },
+  args: { notificationId: v.string(), userId: v.string() },
   returns: v.array(
     v.object({ status: v.string(), attempts: v.number(), errorKind: v.optional(v.string()) }),
   ),
@@ -187,7 +189,6 @@ export const deliveries = internalQuery({
   },
 });
 
-/** What the `onComplete` callback recorded for this user's notifications. */
 export const completedResults = internalQuery({
   args: { userId: v.string() },
   returns: v.array(
@@ -236,7 +237,6 @@ export const resume = internalMutation({
   handler: (ctx, args) => webPush.resumeNotifications(ctx, args),
 });
 
-/** Run once after deploying: `npx convex run example:selfTest`. */
 export const selfTest = internalAction({
   args: {},
   returns: v.object({

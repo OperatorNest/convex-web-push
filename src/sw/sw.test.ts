@@ -170,3 +170,35 @@ test("the bundled classic service worker behaves like the module handlers", asyn
   await bad.settle();
   expect(scope.clients.openWindow).not.toHaveBeenCalled();
 });
+
+test("an external fallback cannot open an external window", () => {
+  expect(resolveClickUrl(undefined, origin, "https://evil.example/x")).toBe(origin + "/");
+  expect(resolveClickUrl({ url: "https://evil.example/y" }, origin, "https://evil.example/x")).toBe(
+    origin + "/",
+  );
+});
+
+test("worker platform failures expose only fixed package errors", async () => {
+  const { scope, listeners } = makeScope();
+  registerPushHandlers(scope);
+  const click = clickEvent({ url: "/" });
+  click.close.mockImplementation(() => {
+    throw new DOMException("private browser data");
+  });
+  handlerFor(listeners, "notificationclick")(click.event);
+  await expect(click.settle()).rejects.toMatchObject({
+    data: { code: "WEB_PUSH_SERVICE_WORKER_FAILED" },
+  });
+  expect(() =>
+    registerPushHandlers({
+      ...scope,
+      addEventListener: () => {
+        throw new DOMException("private browser data");
+      },
+    }),
+  ).toThrow(
+    expect.objectContaining({
+      data: expect.objectContaining({ code: "WEB_PUSH_SERVICE_WORKER_FAILED" }),
+    }),
+  );
+});

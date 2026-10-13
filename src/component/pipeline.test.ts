@@ -32,8 +32,6 @@ async function subscribe(t: TestCtx, userId = "u1", host?: string) {
 }
 
 async function subscribeBatch(t: TestCtx, users: string[], counts: number[]) {
-  // Batch boundary tests do not exercise browser key generation. Reuse one valid key pair while
-  // assigning each stored subscription a unique endpoint.
   const template = await makeSubscription();
   let endpointNumber = 0;
   for (const [userIndex, userId] of users.entries()) {
@@ -52,22 +50,26 @@ async function deliveryForUser(t: TestCtx, userId: string) {
   const notification = await t.run((ctx) =>
     ctx.db
       .query("notifications")
-      .withIndex("by_user_createdAt", (q) => q.eq("userId", userId))
+      .withIndex("by_userId_and_createdAt", (q) => q.eq("userId", userId))
       .first(),
   );
   if (!notification) return null;
   return t.run((ctx) =>
     ctx.db
       .query("deliveries")
-      .withIndex("by_notification", (q) => q.eq("notificationId", notification._id))
+      .withIndex("by_notificationId", (q) => q.eq("notificationId", notification._id))
       .first(),
   );
 }
 
 async function finished(t: TestCtx, notificationId: Id<"notifications">) {
   await drain(t);
-  const notification = await t.query(api.notifications.get, { notificationId });
-  const deliveries = await t.query(api.deliveries.listForNotification, { notificationId });
+  const row = required(await t.run((ctx) => ctx.db.get("notifications", notificationId)));
+  const notification = await t.query(api.notifications.get, { notificationId, userId: row.userId });
+  const deliveries = await t.query(api.deliveries.listForNotification, {
+    notificationId,
+    userId: row.userId,
+  });
   return { notification: required(notification, "the notification"), deliveries };
 }
 
@@ -192,7 +194,7 @@ test.each([404, 410])("%i marks the subscription gone and is not retried", async
   expect(await t.mutation(api.notifications.send, { userId: "u1", payload: "x" })).toBeNull();
 });
 
-test("a permanent error is not retried and keeps the response body", async () => {
+test("a permanent error is not retried and records fixed error data", async () => {
   await configureVapid();
   const { mock } = stubFetch(respond(400));
   const t = setupTest({ testMode: false });
@@ -203,7 +205,11 @@ test("a permanent error is not retried and keeps the response body", async () =>
   expect(deliveries[0]).toMatchObject({
     status: "failed",
     errorKind: "bad_request",
-    detail: "push service says no",
+    error: {
+      code: "WEB_PUSH_SERVICE_FAILED",
+      providerStatus: 400,
+      message: "The push attempt failed or the subscription is no longer eligible.",
+    },
   });
   expect(notification.counts.failed).toBe(1);
   const sub = await t.run((ctx) => ctx.db.query("subscriptions").first());
@@ -343,7 +349,7 @@ test("idempotencyKey dedupes per user and sends once", async () => {
   expect(other).not.toBe(first);
   await drain(t);
   expect(mock).toHaveBeenCalledTimes(2);
-  expect(await t.run((ctx) => ctx.db.query("notifications").collect())).toHaveLength(2);
+  expect(await t.run((ctx) => ctx.db.query("notifications").take(10000))).toHaveLength(2);
 });
 
 test("sendBatch fans out per user and dedupes repeated ids", async () => {
@@ -406,9 +412,9 @@ test("without opt-in, sending with no VAPID configuration throws and creates not
   await expect(
     t.mutation(api.notifications.sendBatch, { userIds: ["u1"], payload: "x" }),
   ).rejects.toMatchObject({ data: { code: "WEB_PUSH_NOT_CONFIGURED" } });
-  expect(await t.run((ctx) => ctx.db.query("notifications").collect())).toHaveLength(0);
+  expect(await t.run((ctx) => ctx.db.query("notifications").take(10000))).toHaveLength(0);
   expect(mock).not.toHaveBeenCalled();
-  // Recording subscriptions and reading the public key keep working.
+
   await subscribe(t);
   expect(await t.query(api.config.getPublicKey, {})).toBeNull();
 });
@@ -423,7 +429,7 @@ test("invalid VAPID settings throw a configuration error that never echoes key m
   );
   expect(isWebPushError(error)).toBe(true);
   expect(String(error)).toContain("WEB_PUSH_NOT_CONFIGURED");
-  expect(String(error)).toContain("VAPID_SUBJECT");
+  expect(String(error)).toContain("VAPID settings are missing or invalid");
   expect(String(error)).not.toContain(keys.privateKey);
   vi.stubEnv("VAPID_SUBJECT", "mailto:ops@example.com");
   vi.stubEnv("VAPID_PRIVATE_KEY", "not-a-key!");
@@ -530,7 +536,7 @@ test("a subscription removed mid-flight ends the delivery without error", async 
   const t = setupTest({ testMode: false });
   const sub = await subscribe(t);
   const id = await t.mutation(api.notifications.send, { userId: "u1", payload: "x" });
-  await t.mutation(api.subscriptions.remove, { endpoint: sub.subscription.endpoint });
+  await t.mutation(api.subscriptions.remove, { endpoint: sub.subscription.endpoint, userId: "u1" });
   const { notification, deliveries } = await finished(t, required(id));
   expect(deliveries[0]).toMatchObject({ status: "gone", errorKind: "subscription_removed" });
   expect(notification.counts.gone).toBe(1);
@@ -567,6 +573,7 @@ test("a subscription reassigned before delivery never receives the old user's pa
   expect(mock).not.toHaveBeenCalled();
   const deliveries = await t.query(api.deliveries.listForNotification, {
     notificationId: required(id),
+    userId: "alice",
   });
   expect(deliveries[0]).toMatchObject({ status: "failed", errorKind: "reassigned" });
   const row = await t.run((ctx) => ctx.db.query("subscriptions").first());
@@ -590,7 +597,7 @@ test("a large batch continues in scheduled mutations within a delivery budget", 
   const batch = await t.query(api.notifications.getBatch, { batchId: first.batchId });
   expect(batch).toMatchObject({ status: "done", processed: 4 });
   expect(batch?.notificationIds).toHaveLength(4);
-  const rows = await t.run((ctx) => ctx.db.query("notifications").collect());
+  const rows = await t.run((ctx) => ctx.db.query("notifications").take(10000));
   expect(
     rows.every((n) => n.status === "delivered" && n.counts.sent === (n.userId === "u4" ? 1 : 50)),
   ).toBe(true);
@@ -652,6 +659,7 @@ test("begin computes the remaining TTL in whole seconds", async () => {
   const id = await t.mutation(api.notifications.send, { userId: "u1", payload: "x", ttl: 600 });
   const [delivery] = await t.query(api.deliveries.listForNotification, {
     notificationId: required(id),
+    userId: "u1",
   });
   vi.setSystemTime(Date.now() + 100_500);
   const job = await t.mutation(internal.deliveries.begin, {
@@ -728,7 +736,7 @@ test("a delivery whose notification was deleted ends without sending", async () 
   const id = required(await t.mutation(api.notifications.send, { userId: "u1", payload: "x" }));
   await t.run((ctx) => ctx.db.delete("notifications", id));
   await drain(t);
-  const rows = await t.run((ctx) => ctx.db.query("deliveries").collect());
+  const rows = await t.run((ctx) => ctx.db.query("deliveries").take(10000));
   expect(rows[0]).toMatchObject({ status: "failed", errorKind: "notification_missing" });
 });
 
@@ -743,7 +751,6 @@ test("begin skips a delivery that already finished", async () => {
   expect(job).toMatchObject({ ok: false, outcome: { errorKind: "delivery_closed" } });
 });
 
-/** The workpool id is only read by workpool itself; these tests invoke the callback directly. */
 const workId = "work" as WorkId;
 
 type WorkResult =
@@ -754,7 +761,7 @@ type WorkResult =
 async function queuedDelivery(t: TestCtx) {
   await subscribe(t);
   const id = required(await t.mutation(api.notifications.send, { userId: "u1", payload: "x" }));
-  const rows = await t.run((ctx) => ctx.db.query("deliveries").collect());
+  const rows = await t.run((ctx) => ctx.db.query("deliveries").take(10000));
   return { id, deliveryId: required(rows[0])._id };
 }
 
@@ -790,11 +797,11 @@ test("a delivery finished twice is only counted once", async () => {
   const done = {
     workId,
     context: { deliveryId },
-    result: { kind: "success", returnValue: { kind: "sent", statusCode: 201 } },
+    result: { kind: "success", returnValue: { kind: "sent", statusCode: 201, attempted: true } },
   } as const;
   await t.mutation(internal.deliveries.onComplete, done);
   await t.mutation(internal.deliveries.onComplete, done);
-  const notification = await t.query(api.notifications.get, { notificationId: id });
+  const notification = await t.query(api.notifications.get, { notificationId: id, userId: "u1" });
   expect(notification?.counts).toEqual({ queued: 0, sent: 1, failed: 0, gone: 0 });
 });
 
@@ -810,7 +817,11 @@ test("VAPID settings that disappear after queueing fail the delivery without sen
   expect(deliveries[0]).toMatchObject({
     status: "failed",
     errorKind: "vapid_not_configured",
-    detail: "VAPID_PRIVATE_KEY is not set",
+    error: {
+      code: "WEB_PUSH_NOT_CONFIGURED",
+      message:
+        "VAPID settings are missing or invalid, changed during a batch, or WEB_PUSH_MAX_PARALLELISM is invalid.",
+    },
   });
 });
 
@@ -820,7 +831,7 @@ test("a key pair that cannot be imported fails permanently without echoing it", 
   const t = setupTest({ testMode: false });
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, { userId: "u1", payload: "x" });
-  // A well-formed 65-byte point that is not on the curve passes the config check but not the import.
+
   const offCurve = base64urlEncode(new Uint8Array([4, ...new Uint8Array(64).fill(1)]));
   vi.stubEnv("VAPID_PUBLIC_KEY", offCurve);
   const { deliveries } = await finished(t, required(id));
@@ -835,14 +846,13 @@ test("a batch never puts more than 150 deliveries in one transaction", async () 
   const users = counts.map((_, i) => `cap${i}`);
   await subscribeBatch(t, users, counts);
   const first = await t.mutation(api.notifications.sendBatch, { userIds: users, payload: "x" });
-  // 49 + 50 + 50 = 149 fits; the fourth user would make 151, so it waits for the continuation.
+
   expect(first.results.map((r) => r.userId)).toEqual(users.slice(0, 3));
   expect(first.done).toBe(false);
-  expect(await t.run((ctx) => ctx.db.query("deliveries").collect())).toHaveLength(149);
-  // The large-batch test above covers scheduled workpool completion; this test isolates the
-  // transaction boundary and the continuation's row count.
+  expect(await t.run((ctx) => ctx.db.query("deliveries").take(10000))).toHaveLength(149);
+
   await t.mutation(internal.notifications.continueBatch, { batchId: first.batchId });
-  expect(await t.run((ctx) => ctx.db.query("deliveries").collect())).toHaveLength(151);
+  expect(await t.run((ctx) => ctx.db.query("deliveries").take(10000))).toHaveLength(151);
   const batch = await t.query(api.notifications.getBatch, { batchId: first.batchId });
   expect(batch).toMatchObject({ status: "done", processed: 4 });
 });
@@ -854,7 +864,7 @@ test("a batch that exactly fills the budget finishes in one call", async () => {
   const first = await t.mutation(api.notifications.sendBatch, { userIds: users, payload: "x" });
   expect(first).toMatchObject({ done: true });
   expect(first.results).toHaveLength(3);
-  expect(await t.run((ctx) => ctx.db.query("deliveries").collect())).toHaveLength(150);
+  expect(await t.run((ctx) => ctx.db.query("deliveries").take(10000))).toHaveLength(150);
 });
 
 test("a user with the maximum 50 subscriptions always fits an empty budget", async () => {
@@ -890,7 +900,6 @@ test("a failed notification releases its idempotency key so a retry sends", asyn
   expect((await finished(t, required(retry))).notification.status).toBe("delivered");
   expect(fetched.mock).toHaveBeenCalledTimes(2);
 
-  // The delivered notification keeps its key.
   const again = await t.mutation(api.notifications.send, {
     userId: "u1",
     payload: "x",
@@ -917,8 +926,7 @@ test("a test-mode batch stays in test mode when the env changes mid-batch", asyn
     processed: 3,
   });
   vi.stubEnv("WEB_PUSH_TEST_MODE", undefined);
-  // The scheduled continuation/workpool path is covered by the large-batch test above. Run this
-  // continuation plus one initial and one continued delivery directly to isolate the captured mode.
+
   await t.mutation(internal.notifications.continueBatch, { batchId: first.batchId });
   const initialDelivery = await deliveryForUser(t, "m0");
   const lastDelivery = await deliveryForUser(t, "m3");
@@ -930,10 +938,10 @@ test("a test-mode batch stays in test mode when the env changes mid-batch", asyn
     statusCode: 0,
   });
   expect(mock).not.toHaveBeenCalled();
-  const rows = await t.run((ctx) => ctx.db.query("notifications").collect());
+  const rows = await t.run((ctx) => ctx.db.query("notifications").take(10000));
   expect(rows).toHaveLength(4);
   expect(rows.every((n) => n.testMode === true)).toBe(true);
-  const deliveries = await t.run((ctx) => ctx.db.query("deliveries").collect());
+  const deliveries = await t.run((ctx) => ctx.db.query("deliveries").take(10000));
   expect(deliveries.every((d) => d.testMode === true)).toBe(true);
   expect(deliveries).toHaveLength(151);
   expect(await t.query(api.notifications.getBatch, { batchId: first.batchId })).toMatchObject({
@@ -954,23 +962,23 @@ test("a real batch stays real when test mode is switched on mid-batch", async ()
     processed: 3,
   });
   vi.stubEnv("WEB_PUSH_TEST_MODE", "true");
-  // The scheduled continuation/workpool path is covered by the large-batch test above. Run this
-  // continuation plus one initial and one continued delivery directly to isolate the captured mode.
+
   await t.mutation(internal.notifications.continueBatch, { batchId: first.batchId });
   const initialDelivery = await deliveryForUser(t, "m0");
   const lastDelivery = await deliveryForUser(t, "m3");
   expect(
     await t.action(internal.deliver.run, { deliveryId: required(initialDelivery)._id }),
-  ).toEqual({ kind: "sent", statusCode: 201 });
+  ).toEqual({ kind: "sent", statusCode: 201, attempted: true });
   expect(await t.action(internal.deliver.run, { deliveryId: required(lastDelivery)._id })).toEqual({
     kind: "sent",
     statusCode: 201,
+    attempted: true,
   });
-  const rows = await t.run((ctx) => ctx.db.query("notifications").collect());
+  const rows = await t.run((ctx) => ctx.db.query("notifications").take(10000));
   expect(rows).toHaveLength(4);
   expect(rows.every((n) => n.testMode === undefined)).toBe(true);
   expect(mock).toHaveBeenCalledTimes(2);
-  const deliveries = await t.run((ctx) => ctx.db.query("deliveries").collect());
+  const deliveries = await t.run((ctx) => ctx.db.query("deliveries").take(10000));
   expect(deliveries).toHaveLength(151);
   expect(deliveries.every((d) => d.testMode === undefined)).toBe(true);
   expect(await t.query(api.notifications.getBatch, { batchId: first.batchId })).toMatchObject({

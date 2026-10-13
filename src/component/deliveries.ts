@@ -1,6 +1,8 @@
 import { vOnCompleteArgs } from "@convex-dev/workpool";
+import { boundedString } from "../shared/bounds.js";
+import { webPushError } from "../shared/errors.js";
 import { v } from "convex/values";
-import { isSendOutcome, MAX_ERROR_DETAIL_CHARS, planRetry } from "../shared/classify.js";
+import { isSendOutcome, planRetry } from "../shared/classify.js";
 import { vSendOutcome, type SendOutcome, vUrgency } from "../shared/validators.js";
 import { internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
@@ -31,7 +33,6 @@ const vBeginResult = v.union(
   }),
 );
 
-/** Loads everything `deliver.run` needs and marks the delivery as sending. */
 export const begin = internalMutation({
   args: { deliveryId: v.id("deliveries") },
   returns: vBeginResult,
@@ -44,6 +45,7 @@ export const begin = internalMutation({
     if (!notification) return skip({ kind: "permanent", errorKind: "notification_missing" });
     const subscription = await ctx.db.get("subscriptions", delivery.subscriptionId);
     if (!subscription) return skip({ kind: "gone", errorKind: "subscription_removed" });
+    await ctx.db.patch("deliveries", deliveryId, { subscriptionRevision: subscription.revision });
     const now = Date.now();
     if (subscription.userId !== delivery.userId) {
       return skip({ kind: "permanent", errorKind: "reassigned" });
@@ -56,7 +58,7 @@ export const begin = internalMutation({
     if (subscription.status !== "active") {
       return skip({ kind: "permanent", errorKind: "subscription_paused" });
     }
-    // TTL 0 means deliver now or drop: one attempt, never retried. Otherwise send what is left.
+
     const ttl = notification.options.ttl;
     const remaining = Math.floor((notification.createdAt + ttl * 1000 - now) / 1000);
     if (ttl > 0 && remaining <= 0) return skip({ kind: "permanent", errorKind: "ttl_expired" });
@@ -101,19 +103,27 @@ export const onComplete = internalMutation({
       outcome = {
         kind: "retryable",
         errorKind: "action_failed",
-        detail: result.error.slice(0, MAX_ERROR_DETAIL_CHARS),
+        error: webPushError("WEB_PUSH_SERVICE_FAILED").data,
       };
     } else outcome = { kind: "permanent", errorKind: "canceled" };
 
     const now = Date.now();
     const notification = await ctx.db.get("notifications", delivery.notificationId);
     const attempts = delivery.attempts + 1;
-    // Patching a field with `undefined` removes it, so each attempt replaces the previous record.
+
     const record = {
       attempts,
       statusCode: outcome.statusCode,
       errorKind: outcome.errorKind,
-      detail: outcome.detail?.slice(0, MAX_ERROR_DETAIL_CHARS),
+      error:
+        outcome.kind === "sent"
+          ? undefined
+          : webPushError(
+              outcome.error?.code ?? "WEB_PUSH_SERVICE_FAILED",
+              outcome.statusCode && outcome.statusCode >= 100 && outcome.statusCode <= 599
+                ? outcome.statusCode
+                : undefined,
+            ).data,
       retryAfterMs: outcome.retryAfterMs,
     };
 
@@ -154,8 +164,12 @@ export const onComplete = internalMutation({
     });
 
     const subscription = await ctx.db.get("subscriptions", delivery.subscriptionId);
-    // A subscription that moved to another user is no longer ours to update.
-    if (subscription && subscription.userId === delivery.userId) {
+
+    if (
+      subscription &&
+      subscription.userId === delivery.userId &&
+      subscription.revision === delivery.subscriptionRevision
+    ) {
       if (finalStatus === "sent") {
         await ctx.db.patch("subscriptions", subscription._id, {
           lastSuccessAt: now,
@@ -163,8 +177,10 @@ export const onComplete = internalMutation({
         });
       } else {
         await ctx.db.patch("subscriptions", subscription._id, {
-          lastFailureAt: now,
-          consecutiveFailures: subscription.consecutiveFailures + 1,
+          ...(outcome.attempted === true && {
+            lastFailureAt: now,
+            consecutiveFailures: subscription.consecutiveFailures + 1,
+          }),
           ...(finalStatus === "gone" ? { status: "gone" as const, updatedAt: now } : {}),
         });
       }
@@ -185,8 +201,7 @@ export const onComplete = internalMutation({
         return null;
       }
       const status = counts.sent > 0 ? "delivered" : "failed";
-      // A definitively failed send releases its idempotency key, so a retry with the same key
-      // (for example after the user re-subscribes) sends instead of returning this failure.
+
       await ctx.db.patch("notifications", notification._id, {
         counts,
         status,
@@ -195,10 +210,12 @@ export const onComplete = internalMutation({
       if (notification.onComplete) {
         await ctx.scheduler.runAfter(0, internal.notifications.invokeCallback, {
           handle: notification.onComplete,
-          notificationId: notification._id,
-          userId: notification.userId,
-          status,
-          counts,
+          result: {
+            notificationId: notification._id,
+            userId: notification.userId,
+            status,
+            counts,
+          },
         });
       }
     }
@@ -207,11 +224,15 @@ export const onComplete = internalMutation({
 });
 
 export const listForNotification = query({
-  args: { notificationId: v.id("notifications") },
+  args: { notificationId: v.id("notifications"), userId: v.string() },
   returns: v.array(schema.doc("deliveries")),
-  handler: (ctx, { notificationId }) =>
-    ctx.db
+  handler: async (ctx, { notificationId, userId }) => {
+    boundedString(userId, 256);
+    const notification = await ctx.db.get("notifications", notificationId);
+    if (notification?.userId !== userId) return [];
+    return ctx.db
       .query("deliveries")
-      .withIndex("by_notification", (q) => q.eq("notificationId", notificationId))
-      .take(100),
+      .withIndex("by_notificationId", (q) => q.eq("notificationId", notificationId))
+      .take(100);
+  },
 });
