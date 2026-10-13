@@ -5,12 +5,12 @@ import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import { CLEANUP_BUDGET } from "./limits.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-export const RETENTION_MS = 7 * DAY_MS;
-export const STUCK_MS = 35 * DAY_MS;
+export const RETENTION_DAYS = 7;
+export const UNFINISHED_RETENTION_DAYS = 35;
 
 async function purge(ctx: MutationCtx, now: number) {
-  const retained = now - RETENTION_MS;
-  const stuck = now - STUCK_MS;
+  const retained = now - RETENTION_DAYS * DAY_MS;
+  const stuck = now - UNFINISHED_RETENTION_DAYS * DAY_MS;
   const steps: ((limit: number) => Promise<number>)[] = [];
   const deliveries = (status: Doc<"deliveries">["status"], cutoff: number) =>
     steps.push(async (limit) => {

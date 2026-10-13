@@ -50,7 +50,7 @@ test("reports unsupported environments", async () => {
   expect(permissionState()).toBe("unsupported");
   expect(await getSubscription()).toBeNull();
   expect(await unsubscribe()).toBeNull();
-  await expect(subscribe({ vapidPublicKey: VAPID_KEY })).rejects.toMatchObject({
+  await expect(subscribe({ applicationServerKey: VAPID_KEY })).rejects.toMatchObject({
     data: { code: "WEB_PUSH_UNSUPPORTED" },
   });
 });
@@ -58,7 +58,10 @@ test("reports unsupported environments", async () => {
 test("subscribe registers the worker and returns serializable JSON", async () => {
   const { pushManager } = stubBrowser(null);
   expect(isSupported()).toBe(true);
-  const json = await subscribe({ vapidPublicKey: VAPID_KEY, serviceWorkerPath: "/push-sw.js" });
+  const json = await subscribe({
+    applicationServerKey: VAPID_KEY,
+    serviceWorkerPath: "/push-sw.js",
+  });
   expect(json).toEqual({
     endpoint: "https://fcm.googleapis.com/fcm/send/x",
     expirationTime: null,
@@ -76,7 +79,7 @@ test("subscribe reuses a subscription made with the same key and replaces one ma
     base64urlDecode(VAPID_KEY),
   );
   const reuse = stubBrowser(same);
-  expect((await subscribe({ vapidPublicKey: VAPID_KEY })).endpoint).toContain("/same");
+  expect((await subscribe({ applicationServerKey: VAPID_KEY })).endpoint).toContain("/same");
   expect(reuse.pushManager.subscribe).not.toHaveBeenCalled();
 
   const stale = fakeSubscription(
@@ -84,14 +87,14 @@ test("subscribe reuses a subscription made with the same key and replaces one ma
     new Uint8Array(65).fill(4),
   );
   const replace = stubBrowser(stale);
-  await subscribe({ vapidPublicKey: VAPID_KEY });
+  await subscribe({ applicationServerKey: VAPID_KEY });
   expect(stale.unsubscribe).toHaveBeenCalled();
   expect(replace.pushManager.subscribe).toHaveBeenCalled();
 });
 
 test("subscribe fails when permission is not granted", async () => {
   stubBrowser(null, "denied");
-  await expect(subscribe({ vapidPublicKey: VAPID_KEY })).rejects.toMatchObject({
+  await expect(subscribe({ applicationServerKey: VAPID_KEY })).rejects.toMatchObject({
     data: { code: "WEB_PUSH_PERMISSION_DENIED" },
   });
 });
@@ -129,7 +132,7 @@ test("subscribe waits for the registration to activate without using serviceWork
     installing: worker,
     waiting: null,
   }));
-  const pending = subscribe({ vapidPublicKey: VAPID_KEY });
+  const pending = subscribe({ applicationServerKey: VAPID_KEY });
   await vi.waitFor(() => expect(worker.listening()).toBe(true));
   expect(pushManager.subscribe).not.toHaveBeenCalled();
   worker.transition("activating");
@@ -145,7 +148,7 @@ test("subscribe fails with a scope hint if the worker never activates", async ()
     installing: fakeWorker("installing"),
     waiting: null,
   }));
-  const pending = subscribe({ vapidPublicKey: VAPID_KEY });
+  const pending = subscribe({ applicationServerKey: VAPID_KEY });
   const assertion = expect(pending).rejects.toMatchObject({
     data: {
       code: "WEB_PUSH_SERVICE_WORKER_FAILED",
@@ -164,7 +167,7 @@ test("subscribe fails if the worker becomes redundant", async () => {
     installing: worker,
     waiting: null,
   }));
-  const pending = subscribe({ vapidPublicKey: VAPID_KEY });
+  const pending = subscribe({ applicationServerKey: VAPID_KEY });
   await vi.waitFor(() => expect(worker.listening()).toBe(true));
   worker.transition("redundant");
   await expect(pending).rejects.toMatchObject({
@@ -176,7 +179,7 @@ test("subscribe fails if the worker becomes redundant", async () => {
 });
 
 test("browser failures are Web Push errors the guard recognises", async () => {
-  const error = await subscribe({ vapidPublicKey: VAPID_KEY }).then(
+  const error = await subscribe({ applicationServerKey: VAPID_KEY }).then(
     () => undefined,
     (e: unknown) => e,
   );
@@ -186,7 +189,7 @@ test("browser failures are Web Push errors the guard recognises", async () => {
 test("native registration failures become package errors", async () => {
   stubBrowser(null);
   vi.mocked(navigator.serviceWorker.register).mockRejectedValue(new Error("native failure"));
-  await expect(subscribe({ vapidPublicKey: VAPID_KEY })).rejects.toMatchObject({
+  await expect(subscribe({ applicationServerKey: VAPID_KEY })).rejects.toMatchObject({
     data: { code: "WEB_PUSH_SERVICE_WORKER_FAILED" },
   });
 });

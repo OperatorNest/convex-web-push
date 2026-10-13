@@ -43,28 +43,12 @@ body:
     validations:
       required: false
   - type: input
-    id: push_service
+    id: operation
     attributes:
-      label: Push service
-      description: Name the browser vendor’s push service.
+      label: Client method or component operation
+      description: Include the method and argument names; redact values.
     validations:
-      required: false
-  - type: dropdown
-    id: permission_state
-    attributes:
-      label: Notification permission state
-      description: Include when relevant.
-      options: [granted, denied, default, not requested, unknown]
-    validations:
-      required: false
-  - type: dropdown
-    id: service_worker_registered
-    attributes:
-      label: Is the service worker registered?
-      description: Include when relevant.
-      options: ["Yes", "No", "Unknown"]
-    validations:
-      required: false
+      required: true
   - type: textarea
     id: reproduction
     attributes:
@@ -88,7 +72,7 @@ body:
     id: logs
     attributes:
       label: Optional logs
-      description: Do not include secrets or credentials (including VAPID private keys and auth tokens), full push subscription endpoints or keys, notification contents, recipient data, or personal information.
+      description: Do not include credentials, keys, tokens, endpoints, plaintext values, lookup hashes, payloads, customer data or personal information.
     validations:
       required: false
   - type: checkboxes

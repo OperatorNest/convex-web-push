@@ -5,6 +5,7 @@ export const MAX_PLAINTEXT_BYTES = 3993;
 const RECORD_SIZE = 4096;
 const HEADER_BYTES = 86;
 
+/** Encryption inputs contain plaintext and the user agent’s P-256 key and authentication secret. */
 export type EncryptInput = {
   plaintext: Uint8Array;
 
@@ -13,6 +14,7 @@ export type EncryptInput = {
   authSecret: Uint8Array;
 };
 
+/** Fixed encryption key material reproduces RFC 8291 vectors without random inputs. */
 export type FixedKeyMaterial = {
   ephemeral: { privateKeyD: Uint8Array; publicKey: Uint8Array };
   salt: Uint8Array;
@@ -54,10 +56,10 @@ async function encryptInternal(
     throw webPushError("WEB_PUSH_PAYLOAD_TOO_LARGE");
   }
   if (uaPublic.byteLength !== 65 || uaPublic[0] !== 4) {
-    throw webPushError("WEB_PUSH_INVALID_SUBSCRIPTION");
+    throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   }
   if (authSecret.byteLength !== 16) {
-    throw webPushError("WEB_PUSH_INVALID_SUBSCRIPTION");
+    throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   }
   const recordLength = plaintext.byteLength + 1;
 

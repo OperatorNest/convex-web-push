@@ -6,7 +6,9 @@ import { isSendOutcome, planRetry } from "../shared/classify.js";
 import { vSendOutcome, type SendOutcome, vUrgency } from "../shared/validators.js";
 import { internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
-import { internalMutation, query } from "./_generated/server.js";
+import { action, env, internalMutation, query } from "./_generated/server.js";
+import { readConfig, isTestMode } from "../shared/config.js";
+import { verificationDefinition } from "./diagnostics.js";
 import { deliveryPool } from "./pool.js";
 import schema from "./schema.js";
 
@@ -25,7 +27,7 @@ const vBeginResult = v.union(
     vapidPublicKeyHash: v.string(),
     payload: v.string(),
     payloadEncoding: v.optional(v.literal("base64url")),
-    ttl: v.number(),
+    ttlSeconds: v.number(),
     urgency: vUrgency,
     topic: v.optional(v.string()),
     testMode: v.optional(v.boolean()),
@@ -47,7 +49,7 @@ export const begin = internalMutation({
     if (!subscription) return skip({ kind: "gone", errorKind: "subscription_removed" });
     await ctx.db.patch("deliveries", deliveryId, { subscriptionRevision: subscription.revision });
     const now = Date.now();
-    if (subscription.userId !== delivery.userId) {
+    if (subscription.userId !== delivery.userId || subscription.testMode !== delivery.testMode) {
       return skip({ kind: "permanent", errorKind: "reassigned" });
     }
     if (subscription.status === "gone")
@@ -59,10 +61,11 @@ export const begin = internalMutation({
       return skip({ kind: "permanent", errorKind: "subscription_paused" });
     }
 
-    const ttl = notification.options.ttl;
-    const remaining = Math.floor((notification.createdAt + ttl * 1000 - now) / 1000);
-    if (ttl > 0 && remaining <= 0) return skip({ kind: "permanent", errorKind: "ttl_expired" });
-    if (ttl === 0 && delivery.attempts > 0) {
+    const ttlSeconds = notification.options.ttlSeconds;
+    const remaining = Math.floor((notification.createdAt + ttlSeconds * 1000 - now) / 1000);
+    if (ttlSeconds > 0 && remaining <= 0)
+      return skip({ kind: "permanent", errorKind: "ttl_expired" });
+    if (ttlSeconds === 0 && delivery.attempts > 0) {
       return skip({ kind: "permanent", errorKind: "ttl_expired" });
     }
     await ctx.db.patch("deliveries", deliveryId, { status: "sending" });
@@ -73,7 +76,7 @@ export const begin = internalMutation({
       auth: subscription.auth,
       vapidPublicKeyHash: subscription.vapidPublicKeyHash,
       payload: notification.payload,
-      ttl: ttl === 0 ? 0 : remaining,
+      ttlSeconds: ttlSeconds === 0 ? 0 : remaining,
       urgency: notification.options.urgency,
       ...(notification.options.topic !== undefined && { topic: notification.options.topic }),
       ...(notification.payloadEncoding !== undefined && {
@@ -103,7 +106,7 @@ export const onComplete = internalMutation({
       outcome = {
         kind: "retryable",
         errorKind: "action_failed",
-        error: webPushError("WEB_PUSH_SERVICE_FAILED").data,
+        error: webPushError("WEB_PUSH_NETWORK_ERROR", { retryable: true }).data,
       };
     } else outcome = { kind: "permanent", errorKind: "canceled" };
 
@@ -113,16 +116,22 @@ export const onComplete = internalMutation({
 
     const record = {
       attempts,
-      statusCode: outcome.statusCode,
+      providerStatus: outcome.providerStatus,
       errorKind: outcome.errorKind,
       error:
         outcome.kind === "sent"
           ? undefined
           : webPushError(
-              outcome.error?.code ?? "WEB_PUSH_SERVICE_FAILED",
-              outcome.statusCode && outcome.statusCode >= 100 && outcome.statusCode <= 599
-                ? outcome.statusCode
-                : undefined,
+              outcome.error?.code ??
+                (outcome.providerStatus ? "WEB_PUSH_PROVIDER_ERROR" : "WEB_PUSH_NETWORK_ERROR"),
+              {
+                retryable: outcome.kind === "retryable",
+                ...(outcome.providerStatus &&
+                outcome.providerStatus >= 100 &&
+                outcome.providerStatus <= 599
+                  ? { providerStatus: outcome.providerStatus }
+                  : {}),
+              },
             ).data,
       retryAfterMs: outcome.retryAfterMs,
     };
@@ -134,7 +143,7 @@ export const onComplete = internalMutation({
         attempts,
         now,
         createdAt: notification.createdAt,
-        ttlSeconds: notification.options.ttl,
+        ttlSeconds: notification.options.ttlSeconds,
         retryAfterMs: outcome.retryAfterMs,
         random: Math.random(),
       });
@@ -168,6 +177,7 @@ export const onComplete = internalMutation({
     if (
       subscription &&
       subscription.userId === delivery.userId &&
+      subscription.testMode === delivery.testMode &&
       subscription.revision === delivery.subscriptionRevision
     ) {
       if (finalStatus === "sent") {
@@ -212,6 +222,7 @@ export const onComplete = internalMutation({
           handle: notification.onComplete,
           result: {
             notificationId: notification._id,
+            testMode: notification.testMode,
             userId: notification.userId,
             status,
             counts,
@@ -223,16 +234,26 @@ export const onComplete = internalMutation({
   },
 });
 
-export const listForNotification = query({
-  args: { notificationId: v.id("notifications"), userId: v.string() },
+export const list = query({
+  args: {
+    notificationId: v.id("notifications"),
+    userId: v.string(),
+    testMode: v.optional(v.boolean()),
+  },
   returns: v.array(schema.doc("deliveries")),
-  handler: async (ctx, { notificationId, userId }) => {
+  handler: async (ctx, { notificationId, userId, testMode }) => {
     boundedString(userId, 256);
     const notification = await ctx.db.get("notifications", notificationId);
-    if (notification?.userId !== userId) return [];
+    if (
+      notification?.userId !== userId ||
+      notification.testMode !== isTestMode(testMode, readConfig(env).testMode)
+    )
+      throw webPushError("WEB_PUSH_NOT_FOUND");
     return ctx.db
       .query("deliveries")
       .withIndex("by_notificationId", (q) => q.eq("notificationId", notificationId))
       .take(100);
   },
 });
+
+export const verify = action(verificationDefinition);

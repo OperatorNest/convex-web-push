@@ -2,6 +2,7 @@ import { utf8ByteLength } from "./base64url.js";
 import { MAX_PLAINTEXT_BYTES } from "./encrypt.js";
 import { webPushError } from "./errors.js";
 
+/** A notification contains the title and display options sent to a service worker. */
 export type PushNotification = {
   title: string;
   body?: string;
@@ -25,9 +26,9 @@ export function serializeNotification(notification: PushNotification): string {
   try {
     json = JSON.stringify(notification);
   } catch {
-    throw webPushError("WEB_PUSH_INVALID_PAYLOAD");
+    throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   }
-  if (typeof json !== "string") throw webPushError("WEB_PUSH_INVALID_PAYLOAD");
+  if (typeof json !== "string") throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   assertPayloadSize(utf8ByteLength(json));
   return json;
 }

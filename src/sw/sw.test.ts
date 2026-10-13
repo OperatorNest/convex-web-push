@@ -136,7 +136,7 @@ function loadClassicWorker(scope: object) {
   new Function("self", swSource)(scope);
 }
 
-test("the bundled classic service worker behaves like the module handlers", async () => {
+test("the bundled classic pushService worker behaves like the module handlers", async () => {
   const focus = vi.fn(async () => {});
   const { scope, listeners } = makeScope([{ url: `${origin}/inbox`, focus }]);
   loadClassicWorker(scope);

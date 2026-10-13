@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import {
   checkPushEndpoint,
-  clampTtl,
+  validateTtlSeconds,
   classifyService,
   isValidTopic,
   MAX_TTL_SECONDS,
@@ -53,13 +53,19 @@ test("classifies services by host", () => {
   expect(classifyService("push.example.test")).toBe("other");
 });
 
-test("clamps TTL and validates topics", () => {
-  expect(clampTtl(undefined)).toBe(86_400);
-  expect(clampTtl(-5)).toBe(0);
-  expect(clampTtl(10.9)).toBe(10);
-  expect(clampTtl(99_999_999)).toBe(MAX_TTL_SECONDS);
-  expect(isValidTopic("unread-count_1")).toBe(true);
-  expect(isValidTopic("")).toBe(false);
-  expect(isValidTopic("a".repeat(33))).toBe(false);
-  expect(isValidTopic("bad topic")).toBe(false);
+test("TTL accepts only integer seconds within the push service bound", () => {
+  expect(validateTtlSeconds(0)).toBe(0);
+  expect(validateTtlSeconds(MAX_TTL_SECONDS)).toBe(MAX_TTL_SECONDS);
+  for (const value of [-10, 123.9, MAX_TTL_SECONDS + 1, Infinity, NaN])
+    expect(() => validateTtlSeconds(value)).toThrow();
+});
+
+test("topics contain one to 32 URL-safe base64 characters", () => {
+  expect(isValidTopic("abc_DEF-012")).toBe(true);
+  for (const topic of ["", "a".repeat(33), "a b", "a/b"]) expect(isValidTopic(topic)).toBe(false);
+});
+
+test("endpoint admission rejects a trailing-dot hostname even with a wildcard", () => {
+  expect(checkPushEndpoint("https://evil.example./push", ["*."]).ok).toBe(false);
+  expect(checkPushEndpoint("https://push.example.com./push", ["push.example.com."]).ok).toBe(false);
 });

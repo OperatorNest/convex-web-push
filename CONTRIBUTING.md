@@ -1,6 +1,6 @@
 # Contributing
 
-Read [README](README.md) and [AGENTS.md](AGENTS.md) first. Deviations from the contract need an ADR in `docs/adr/`.
+Read [README](README.md) and [AGENTS.md](AGENTS.md) first. Public API changes need an ADR in `docs/adr/`.
 
 ## Setup
 
@@ -34,15 +34,16 @@ Run `pnpm smoke` for any change to component functions, schema or shared runtime
   (`feat:`, `fix:`, `docs:`, `test:`, `chore:`); a breaking change adds `!` after the type.
 - Until 1.0.0, a breaking change ships without compatibility code, deprecation periods or data
   migrations; its changeset is a `minor` bump that states what breaks.
+- Add a changeset for every consumer-visible change to `@operatornest/convex-web-push`.
 - Public component functions have `args` and `returns` validators; reads are bounded and indexed.
-- Errors on caller-reachable paths come from `webPushError` in `src/shared/errors.ts`; add new
-  codes there and to the README table.
-- No Node built-ins, `Buffer` or `process` in `src/`. Secrets are read only through the generated
-  `env` and never appear in arguments, rows, logs or error messages.
-- Anything that touches subscription endpoints keeps the SSRF allowlist at both record and send
-  time.
-- Tests use freshly generated VAPID keys and a mocked `fetch`. Never use real keys, real
-  subscription endpoints or real push services.
+- Errors on caller-reachable paths come from `webPushError` in `src/shared/errors.ts`; add each
+  `WEB_PUSH_` code, its fixed message and its README Errors row together.
+- No Node built-ins, `Buffer` or `process` in `src/`. Read provider credentials and master keys
+  only through generated component env; never put them in arguments, rows, logs or errors.
+- Tests use generated credentials or fixed test-only vectors and stub external requests.
+- Regenerate committed bindings from their inputs with `pnpm build:codegen`.
+- Update affected examples, README claims and ADR contracts. Run the checks in AGENTS.md and
+  report commands and exit codes.
 
 ## Bug reports
 

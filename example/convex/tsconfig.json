@@ -5,7 +5,7 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
+    "exactOptionalPropertyTypes": false,
     "moduleResolution": "Bundler",
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,

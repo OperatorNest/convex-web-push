@@ -21,7 +21,8 @@
     "rootDir": "./src",
     "outDir": "./dist",
     "verbatimModuleSyntax": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "exactOptionalPropertyTypes": false
   },
   "include": ["./src/**/*"]
 }

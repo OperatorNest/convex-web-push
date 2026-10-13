@@ -63,8 +63,8 @@
         "@convex-dev/no-schema-import-cycle": "error",
         "@convex-dev/no-duplicate-indexes": "error",
         "@convex-dev/no-process-env": "error",
-        "@convex-dev/import-wrong-runtime": "error",
-        "@convex-dev/no-collect-in-query": "error"
+        "@convex-dev/no-collect-in-query": "error",
+        "@convex-dev/import-wrong-runtime": "error"
       }
     },
     {

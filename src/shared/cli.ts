@@ -1,17 +1,18 @@
 import { validateVapidSubject, generateVapidKeys, type VapidKeys } from "./vapid.js";
 
+/** A CLI result carries the exit code and text written to standard output and error. */
 export type CliResult = { code: number; stdout: string; stderr: string };
 
 const USAGE = `Usage: convex-web-push generate-keys [--subject mailto:you@example.com]
 
-Prints VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT as env lines.
+Prints WEB_PUSH_VAPID_PUBLIC_KEY, WEB_PUSH_VAPID_PRIVATE_KEY and WEB_PUSH_VAPID_SUBJECT as env lines.
 `;
 
 function formatEnvLines(keys: VapidKeys, subject: string): string {
   return [
-    `VAPID_PUBLIC_KEY=${keys.publicKey}`,
-    `VAPID_PRIVATE_KEY=${keys.privateKey}`,
-    `VAPID_SUBJECT=${subject}`,
+    `WEB_PUSH_VAPID_PUBLIC_KEY=${keys.publicKey}`,
+    `WEB_PUSH_VAPID_PRIVATE_KEY=${keys.privateKey}`,
+    `WEB_PUSH_VAPID_SUBJECT=${subject}`,
     "",
   ].join("\n");
 }
@@ -42,10 +43,10 @@ export async function runCli(
   if (subjectProblem) return { code: 1, stdout: "", stderr: `${subjectProblem}\n` };
   const stdout = `${formatEnvLines(await generate(), subject)}
 Set them on your Convex deployment, for example:
-  pnpm exec convex env set VAPID_PUBLIC_KEY '<value>'
-  pnpm exec convex env set VAPID_PRIVATE_KEY '<value>'
-  pnpm exec convex env set VAPID_SUBJECT '${subject.replaceAll("'", "'\"'\"'")}'
-Keep VAPID_PRIVATE_KEY secret and never commit it.
+  pnpm exec convex env set WEB_PUSH_VAPID_PUBLIC_KEY '<value>'
+  pnpm exec convex env set WEB_PUSH_VAPID_PRIVATE_KEY '<value>'
+  pnpm exec convex env set WEB_PUSH_VAPID_SUBJECT '${subject.replaceAll("'", "'\"'\"'")}'
+Keep WEB_PUSH_VAPID_PRIVATE_KEY secret and never commit it.
 `;
   return { code: 0, stdout, stderr: "" };
 }

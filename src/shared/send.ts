@@ -8,13 +8,14 @@ import { signVapidJwt, vapidAuthorization } from "./vapid.js";
 
 const SEND_TIMEOUT_MS = 10_000;
 
+/** A push request carries its subscription, plaintext, delivery options and imported VAPID signing key. */
 export type SendWebPushInput = {
   endpoint: string;
   p256dh: string;
   auth: string;
 
   payload: Uint8Array | null;
-  ttl: number;
+  ttlSeconds: number;
   urgency: Urgency;
   topic?: string | undefined;
   allowedPushHosts?: readonly string[] | undefined;
@@ -39,11 +40,11 @@ export async function sendWebPush(input: SendWebPushInput): Promise<SendOutcome>
     return {
       kind: "permanent",
       errorKind: "endpoint_not_allowed",
-      error: webPushError("WEB_PUSH_INVALID_SUBSCRIPTION").data,
+      error: webPushError("WEB_PUSH_INVALID_ARGUMENT").data,
     };
 
   const headers: Record<string, string> = {
-    TTL: String(input.ttl),
+    TTL: String(input.ttlSeconds),
     Urgency: input.urgency,
   };
   if (input.topic) headers.Topic = input.topic;
@@ -86,7 +87,10 @@ export async function sendWebPush(input: SendWebPushInput): Promise<SendOutcome>
     );
     await response.body?.cancel().catch(() => {});
     if (outcome.kind !== "sent")
-      outcome.error = webPushError("WEB_PUSH_SERVICE_FAILED", response.status).data;
+      outcome.error = webPushError("WEB_PUSH_PROVIDER_ERROR", {
+        providerStatus: response.status,
+        retryable: outcome.kind === "retryable",
+      }).data;
     return { ...outcome, attempted: true };
   } catch {
     const aborted = controller.signal.aborted;
@@ -94,7 +98,7 @@ export async function sendWebPush(input: SendWebPushInput): Promise<SendOutcome>
       kind: "retryable",
       attempted: true,
       errorKind: aborted ? "timeout" : "network_error",
-      error: webPushError("WEB_PUSH_SERVICE_FAILED").data,
+      error: webPushError("WEB_PUSH_NETWORK_ERROR", { retryable: true }).data,
     };
   } finally {
     clearTimeout(timer);

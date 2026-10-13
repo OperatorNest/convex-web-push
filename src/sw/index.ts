@@ -1,5 +1,6 @@
 import { webPushError } from "../shared/errors.js";
 
+/** A push payload supplies notification display fields and a same-origin click destination. */
 export type PushPayload = {
   title?: string;
   body?: string;
@@ -16,6 +17,7 @@ export type PushPayload = {
   data?: unknown;
 };
 
+/** Push handler options supply display and click defaults when the payload omits them. */
 export type PushHandlerOptions = {
   defaultTitle?: string;
   defaultIcon?: string;

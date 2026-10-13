@@ -20,8 +20,8 @@ export function classifyPushStatus(
   retryAfterHeader: string | null | undefined,
   now: number,
 ): SendOutcome {
-  if (status >= 200 && status < 300) return { kind: "sent", statusCode: status };
-  const base = { statusCode: status };
+  if (status >= 200 && status < 300) return { kind: "sent", providerStatus: status };
+  const base = { providerStatus: status };
   if (status === 404 || status === 410)
     return { ...base, kind: "gone", errorKind: "subscription_gone" };
   const retryAfterMs = parseRetryAfter(retryAfterHeader, now);
@@ -45,6 +45,7 @@ export function backoffMs(attempts: number, random: number): number {
   return Math.round(base * (1 + random * 0.25));
 }
 
+/** A retry plan either schedules a bounded delay or records why attempts stop. */
 export type RetryPlan = { retry: true; delayMs: number } | { retry: false; reason: string };
 
 export function planRetry(input: {

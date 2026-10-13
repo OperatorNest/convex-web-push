@@ -46,15 +46,16 @@ export function boundedPage(options: PaginationOptions): PaginationOptions {
       if (
         !Array.isArray(values) ||
         (values.length !== 0 &&
-          (values.length !== 4 ||
+          (values.length !== 5 ||
             typeof values[0] !== "string" ||
             !values[0].isWellFormed() ||
-            typeof values[1] !== "number" ||
-            !Number.isFinite(values[1]) ||
+            typeof values[1] !== "boolean" ||
             typeof values[2] !== "number" ||
             !Number.isFinite(values[2]) ||
-            typeof values[3] !== "string" ||
-            !values[3].isWellFormed()))
+            typeof values[3] !== "number" ||
+            !Number.isFinite(values[3]) ||
+            typeof values[4] !== "string" ||
+            !values[4].isWellFormed()))
       )
         throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
     } catch {

@@ -8,25 +8,27 @@ import schema from "./component/schema.js";
 
 const modules = import.meta.glob(["./component/**/*.ts", "!./component/**/*.test.ts"]);
 
+/** Test setup options select simulated or stubbed-provider execution. */
 export type SetupOptions = {
   testMode?: boolean;
 };
 
 export function setupTest(options: SetupOptions = {}) {
-  if (options.testMode !== false) vi.stubEnv("WEB_PUSH_TEST_MODE", "true");
+  vi.stubEnv("WEB_PUSH_TEST_MODE", options.testMode === false ? "false" : "true");
   const t = convexTest(schema, modules);
   registerWorkpool(t, "workpool");
   return t;
 }
 
+/** The component test context runs registered functions against the in-memory database. */
 export type TestCtx = ReturnType<typeof setupTest>;
 
 export async function configureVapid(subject = "mailto:ops@example.com") {
   const keys = await generateVapidKeys();
-  vi.stubEnv("VAPID_PUBLIC_KEY", keys.publicKey);
-  vi.stubEnv("VAPID_PRIVATE_KEY", keys.privateKey);
-  vi.stubEnv("VAPID_SUBJECT", subject);
-  vi.stubEnv("WEB_PUSH_TEST_MODE", undefined);
+  vi.stubEnv("WEB_PUSH_VAPID_PUBLIC_KEY", keys.publicKey);
+  vi.stubEnv("WEB_PUSH_VAPID_PRIVATE_KEY", keys.privateKey);
+  vi.stubEnv("WEB_PUSH_VAPID_SUBJECT", subject);
+  vi.stubEnv("WEB_PUSH_TEST_MODE", "false");
   return keys;
 }
 
@@ -131,7 +133,7 @@ export function stubFetch(...responders: (() => Response | Promise<Response>)[])
 }
 
 export const respond = (status: number, headers?: Record<string, string>) => () =>
-  new Response(status === 201 ? null : "push service says no", {
+  new Response(status === 201 ? null : "push pushService says no", {
     status,
     ...(headers !== undefined && { headers }),
   });

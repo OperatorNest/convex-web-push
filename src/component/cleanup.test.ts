@@ -1,16 +1,17 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { internal } from "./_generated/api.js";
-import type { Id } from "./_generated/dataModel.js";
+import { internal, api } from "./_generated/api.js";
+import { type Id } from "./_generated/dataModel.js";
 import { drain, makeSubscription, setupTest, type TestCtx } from "../test-helpers.js";
-import { api } from "./_generated/api.js";
 
 const DAY = 24 * 60 * 60 * 1000;
+
 const now = Date.UTC(2026, 9, 4, 12);
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(now);
 });
+
 afterEach(() => vi.useRealTimers());
 
 async function seed(t: TestCtx) {
@@ -21,9 +22,10 @@ async function seed(t: TestCtx) {
   });
   const notificationId = await t.run((ctx) =>
     ctx.db.insert("notifications", {
+      testMode: true,
       userId: "u1",
       payload: "x",
-      options: { ttl: 60, urgency: "normal" },
+      options: { ttlSeconds: 60, urgency: "normal" },
       status: "delivered",
       counts: { queued: 0, sent: 1, failed: 0, gone: 0 },
       createdAt: now,
@@ -40,6 +42,7 @@ async function addDelivery(
 ) {
   return t.run((ctx) =>
     ctx.db.insert("deliveries", {
+      testMode: true,
       ...ids,
       userId: "u1",
       status,
@@ -72,9 +75,10 @@ test("deletes finished notifications past retention but keeps unfinished ones", 
   const insert = (status: "delivered" | "failed" | "queued" | "partial", ageDays: number) =>
     t.run((ctx) =>
       ctx.db.insert("notifications", {
+        testMode: true,
         userId: "u1",
         payload: "x",
-        options: { ttl: 60, urgency: "normal" },
+        options: { ttlSeconds: 60, urgency: "normal" },
         status,
         counts: {
           queued: status === "queued" || status === "partial" ? 1 : 0,
@@ -136,11 +140,12 @@ test("removes finished batch records after retention", async () => {
   const insert = (status: "done" | "running", ageDays: number) =>
     t.run((ctx) =>
       ctx.db.insert("batches", {
+        testMode: true,
         userIds: [],
         vapidPublicKeyHash: "none",
         nextIndex: 0,
         notificationIds: [],
-        send: { payload: "x" },
+        send: { ttlSeconds: 86400, urgency: "normal", payload: "x" },
         status,
         createdAt: now - ageDays * DAY,
       }),
@@ -150,4 +155,22 @@ test("removes finished batch records after retention", async () => {
   await t.mutation(internal.cleanup.run, { now });
   expect(await t.run((ctx) => ctx.db.get("batches", oldDone))).toBeNull();
   expect(await t.run((ctx) => ctx.db.get("batches", running))).not.toBeNull();
+});
+
+test("cleanup removes a running batch after 35 days", async () => {
+  const t = setupTest();
+  const batchId = await t.run((ctx) =>
+    ctx.db.insert("batches", {
+      testMode: true,
+      userIds: [],
+      vapidPublicKeyHash: "none",
+      nextIndex: 0,
+      notificationIds: [],
+      send: { ttlSeconds: 86400, urgency: "normal", payload: "x" },
+      status: "running",
+      createdAt: Date.now() - 36 * 86400000,
+    }),
+  );
+  await t.mutation(internal.cleanup.run, {});
+  expect(await t.run((ctx) => ctx.db.get("batches", batchId))).toBeNull();
 });

@@ -1,22 +1,26 @@
 import { base64urlDecode, bytesEqual } from "../shared/base64url.js";
 import { isWebPushError, webPushError } from "../shared/errors.js";
 
-export type WebPushSubscriptionJSON = {
+/** A serialized push subscription contains its endpoint, expiration time and encryption keys. */
+export type PushSubscriptionJSON = {
   endpoint: string;
   expirationTime: number | null;
   keys: { p256dh: string; auth: string };
 };
 
+/** Permission state records browser notification permission or unsupported push messaging. */
 export type PermissionState = NotificationPermission | "unsupported";
 
+/** Registration options select an existing service worker or its script path. */
 export type RegistrationOptions = {
   registration?: ServiceWorkerRegistration;
 
   serviceWorkerPath?: string;
 };
 
+/** Subscription options select the application server key and service worker registration. */
 export type SubscribeOptions = RegistrationOptions & {
-  vapidPublicKey: string;
+  applicationServerKey: string;
 };
 
 export function isSupported(): boolean {
@@ -77,10 +81,10 @@ async function resolveRegistration(
   return registration;
 }
 
-function toJSON(subscription: PushSubscription): WebPushSubscriptionJSON {
+function toJSON(subscription: PushSubscription): PushSubscriptionJSON {
   const json = subscription.toJSON();
   const { p256dh, auth } = json.keys ?? {};
-  if (!json.endpoint || !p256dh || !auth) throw webPushError("WEB_PUSH_INVALID_SUBSCRIPTION");
+  if (!json.endpoint || !p256dh || !auth) throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   return {
     endpoint: json.endpoint,
     expirationTime: json.expirationTime ?? null,
@@ -88,33 +92,29 @@ function toJSON(subscription: PushSubscription): WebPushSubscriptionJSON {
   };
 }
 
-async function subscribeImpl(options: SubscribeOptions): Promise<WebPushSubscriptionJSON> {
+async function subscribeImpl(options: SubscribeOptions): Promise<PushSubscriptionJSON> {
   if (!isSupported()) throw webPushError("WEB_PUSH_UNSUPPORTED");
   const permission = await Notification.requestPermission();
   if (permission !== "granted") throw webPushError("WEB_PUSH_PERMISSION_DENIED");
 
   const registration = await resolveRegistration(options);
-  const applicationServerKey = urlBase64ToUint8Array(options.vapidPublicKey);
+  const keyBytes = urlBase64ToUint8Array(options.applicationServerKey);
   let subscription = await registration.pushManager.getSubscription();
   const existingKey = subscription?.options.applicationServerKey;
-  if (
-    subscription &&
-    existingKey &&
-    !bytesEqual(new Uint8Array(existingKey), applicationServerKey)
-  ) {
+  if (subscription && existingKey && !bytesEqual(new Uint8Array(existingKey), keyBytes)) {
     await subscription.unsubscribe();
     subscription = null;
   }
   subscription ??= await registration.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey,
+    applicationServerKey: keyBytes,
   });
   return toJSON(subscription);
 }
 
 async function getSubscriptionImpl(
   options: RegistrationOptions = {},
-): Promise<WebPushSubscriptionJSON | null> {
+): Promise<PushSubscriptionJSON | null> {
   if (!isSupported()) return null;
   const registration =
     options.registration ??
@@ -143,12 +143,12 @@ async function browserOperation<T>(operation: () => Promise<T>): Promise<T> {
     throw webPushError("WEB_PUSH_BROWSER_FAILED");
   }
 }
-export function subscribe(options: SubscribeOptions): Promise<WebPushSubscriptionJSON> {
+export function subscribe(options: SubscribeOptions): Promise<PushSubscriptionJSON> {
   return browserOperation(() => subscribeImpl(options));
 }
 export function getSubscription(
   options: RegistrationOptions = {},
-): Promise<WebPushSubscriptionJSON | null> {
+): Promise<PushSubscriptionJSON | null> {
   return browserOperation(() => getSubscriptionImpl(options));
 }
 export function unsubscribe(options: RegistrationOptions = {}): Promise<string | null> {
@@ -156,9 +156,9 @@ export function unsubscribe(options: RegistrationOptions = {}): Promise<string |
 }
 export function urlBase64ToUint8Array(value: string): Uint8Array<ArrayBuffer> {
   try {
-    if (value.length > 88) throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
+    if (value.length > 88) throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
     return base64urlDecode(value);
   } catch {
-    throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
+    throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   }
 }

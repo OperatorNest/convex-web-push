@@ -23,20 +23,11 @@ import type { FunctionReference } from "convex/server";
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
-    config: {
-      getPublicKey: FunctionReference<
-        "query",
-        "internal",
-        {},
-        string | null,
-        Name
-      >;
-    };
     deliveries: {
-      listForNotification: FunctionReference<
+      list: FunctionReference<
         "query",
         "internal",
-        { notificationId: string; userId: string },
+        { notificationId: string; testMode?: boolean; userId: string },
         Array<{
           _creationTime: number;
           _id: string;
@@ -46,40 +37,38 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             code:
               | "WEB_PUSH_NOT_CONFIGURED"
               | "WEB_PUSH_INVALID_ARGUMENT"
-              | "WEB_PUSH_INVALID_SUBSCRIPTION"
-              | "WEB_PUSH_INVALID_PAYLOAD"
+              | "WEB_PUSH_NOT_FOUND"
+              | "WEB_PUSH_IDEMPOTENCY_CONFLICT"
+              | "WEB_PUSH_PROVIDER_ERROR"
+              | "WEB_PUSH_NETWORK_ERROR"
               | "WEB_PUSH_PAYLOAD_TOO_LARGE"
-              | "WEB_PUSH_INVALID_TOPIC"
-              | "WEB_PUSH_BATCH_TOO_LARGE"
-              | "WEB_PUSH_INVALID_VAPID_KEY"
               | "WEB_PUSH_CRYPTO_UNSUPPORTED"
               | "WEB_PUSH_UNSUPPORTED"
               | "WEB_PUSH_PERMISSION_DENIED"
               | "WEB_PUSH_SERVICE_WORKER_FAILED"
-              | "WEB_PUSH_BROWSER_FAILED"
-              | "WEB_PUSH_SERVICE_FAILED";
+              | "WEB_PUSH_BROWSER_FAILED";
             message: string;
+            providerCode?: string;
             providerStatus?: number;
+            retryable?: boolean;
           };
           errorKind?: string;
           notificationId: string;
+          providerStatus?: number;
           retryAfterMs?: number;
           sentAt?: number;
           status: "queued" | "sending" | "sent" | "failed" | "gone" | "retry";
-          statusCode?: number;
           subscriptionId: string;
           subscriptionRevision?: number;
-          testMode?: boolean;
+          testMode: boolean;
           userId: string;
         }>,
         Name
       >;
-    };
-    diagnostics: {
-      selfTest: FunctionReference<
+      verify: FunctionReference<
         "action",
         "internal",
-        {},
+        { testMode?: boolean },
         {
           checks: Array<{ error?: string; name: string; ok: boolean }>;
           config: { configured: boolean; problem?: string };
@@ -93,7 +82,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       get: FunctionReference<
         "query",
         "internal",
-        { notificationId: string; userId: string },
+        { notificationId: string; testMode?: boolean; userId: string },
         {
           _creationTime: number;
           _id: string;
@@ -109,45 +98,43 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           onComplete?: string;
           options: {
             topic?: string;
-            ttl: number;
+            ttlSeconds: number;
             urgency: "very-low" | "low" | "normal" | "high";
           };
           payload: string;
           payloadEncoding?: "base64url";
           status: "queued" | "partial" | "delivered" | "failed";
-          testMode?: boolean;
+          testMode: boolean;
           userId: string;
-        } | null,
+        },
         Name
       >;
       getBatch: FunctionReference<
         "query",
         "internal",
-        { batchId: string },
+        { batchId: string; testMode?: boolean },
         {
           errorCode?:
             | "WEB_PUSH_NOT_CONFIGURED"
             | "WEB_PUSH_INVALID_ARGUMENT"
-            | "WEB_PUSH_INVALID_SUBSCRIPTION"
-            | "WEB_PUSH_INVALID_PAYLOAD"
+            | "WEB_PUSH_NOT_FOUND"
+            | "WEB_PUSH_IDEMPOTENCY_CONFLICT"
+            | "WEB_PUSH_PROVIDER_ERROR"
+            | "WEB_PUSH_NETWORK_ERROR"
             | "WEB_PUSH_PAYLOAD_TOO_LARGE"
-            | "WEB_PUSH_INVALID_TOPIC"
-            | "WEB_PUSH_BATCH_TOO_LARGE"
-            | "WEB_PUSH_INVALID_VAPID_KEY"
             | "WEB_PUSH_CRYPTO_UNSUPPORTED"
             | "WEB_PUSH_UNSUPPORTED"
             | "WEB_PUSH_PERMISSION_DENIED"
             | "WEB_PUSH_SERVICE_WORKER_FAILED"
-            | "WEB_PUSH_BROWSER_FAILED"
-            | "WEB_PUSH_SERVICE_FAILED";
+            | "WEB_PUSH_BROWSER_FAILED";
           notificationIds: Array<string>;
           processed: number;
           status: "running" | "done" | "failed";
           total: number;
-        } | null,
+        },
         Name
       >;
-      listForUser: FunctionReference<
+      list: FunctionReference<
         "query",
         "internal",
         {
@@ -159,6 +146,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             maximumRowsRead?: number;
             numItems: number;
           };
+          testMode?: boolean;
           userId: string;
         },
         {
@@ -179,13 +167,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             onComplete?: string;
             options: {
               topic?: string;
-              ttl: number;
+              ttlSeconds: number;
               urgency: "very-low" | "low" | "normal" | "high";
             };
             payload: string;
             payloadEncoding?: "base64url";
             status: "queued" | "partial" | "delivered" | "failed";
-            testMode?: boolean;
+            testMode: boolean;
             userId: string;
           }>;
           pageStatus?: "SplitRecommended" | "SplitRequired" | null;
@@ -204,8 +192,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           payloadEncoding?: "base64url";
           testMode?: boolean;
           topic?: string;
-          ttl?: number;
-          urgency?: "very-low" | "low" | "normal" | "high";
+          ttlSeconds: number;
+          urgency: "very-low" | "low" | "normal" | "high";
           userId: string;
         },
         string | null,
@@ -222,8 +210,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           payloadEncoding?: "base64url";
           testMode?: boolean;
           topic?: string;
-          ttl?: number;
-          urgency?: "very-low" | "low" | "normal" | "high";
+          ttlSeconds: number;
+          urgency: "very-low" | "low" | "normal" | "high";
           userIds: Array<string>;
         },
         {
@@ -235,11 +223,25 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
     };
     subscriptions: {
-      pauseForUser: FunctionReference<
+      getStatus: FunctionReference<
+        "query",
+        "internal",
+        { testMode?: boolean; userId: string },
+        { lastSuccessAt?: number; paused: number; subscriptions: number },
+        Name
+      >;
+      pause: FunctionReference<
         "mutation",
         "internal",
-        { userId: string },
+        { testMode?: boolean; userId: string },
         number,
+        Name
+      >;
+      readApplicationServerKey: FunctionReference<
+        "query",
+        "internal",
+        { testMode?: boolean },
+        string | null,
         Name
       >;
       record: FunctionReference<
@@ -252,6 +254,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             expirationTime?: number | null;
             keys: { auth: string; p256dh: string };
           };
+          testMode?: boolean;
           userAgent?: string;
           userId: string;
         },
@@ -261,29 +264,22 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       remove: FunctionReference<
         "mutation",
         "internal",
-        { endpoint: string; userId: string },
+        { endpoint: string; testMode?: boolean; userId: string },
         boolean,
         Name
       >;
-      removeAllForUser: FunctionReference<
+      removeAll: FunctionReference<
         "mutation",
         "internal",
-        { userId: string },
+        { testMode?: boolean; userId: string },
         { done: boolean; removed: number },
         Name
       >;
-      resumeForUser: FunctionReference<
+      resume: FunctionReference<
         "mutation",
         "internal",
-        { userId: string },
+        { testMode?: boolean; userId: string },
         number,
-        Name
-      >;
-      statusForUser: FunctionReference<
-        "query",
-        "internal",
-        { userId: string },
-        { lastSuccessAt?: number; paused: number; subscriptions: number },
         Name
       >;
     };

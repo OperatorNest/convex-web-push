@@ -1,3 +1,4 @@
+import { webPushError } from "./errors.js";
 import type { PushService } from "./validators.js";
 
 const DEFAULT_PUSH_HOSTS = [
@@ -8,15 +9,15 @@ const DEFAULT_PUSH_HOSTS = [
 ] as const;
 
 export const MAX_TTL_SECONDS = 2_419_200;
-const DEFAULT_TTL_SECONDS = 86_400;
 
 export function isValidTopic(topic: string): boolean {
   return /^[A-Za-z0-9_-]{1,32}$/.test(topic);
 }
 
-export function clampTtl(ttl: number | undefined): number {
-  if (ttl === undefined || !Number.isFinite(ttl)) return DEFAULT_TTL_SECONDS;
-  return Math.min(Math.max(Math.floor(ttl), 0), MAX_TTL_SECONDS);
+export function validateTtlSeconds(ttlSeconds: number): number {
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 0 || ttlSeconds > MAX_TTL_SECONDS)
+    throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
+  return ttlSeconds;
 }
 
 export function classifyService(hostname: string): PushService {
@@ -38,8 +39,9 @@ function isIpLiteral(host: string): boolean {
   return host.includes(":") || host.startsWith("[") || /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
 }
 
+/** An endpoint check either admits a parsed URL and push service or explains its rejection. */
 export type EndpointCheck =
-  | { ok: true; url: URL; service: PushService }
+  | { ok: true; url: URL; pushService: PushService }
   | { ok: false; reason: string };
 
 export function checkPushEndpoint(
@@ -70,5 +72,5 @@ export function checkPushEndpoint(
   );
   if (!allowed)
     return { ok: false, reason: `Endpoint host ${host} is not an allowed push service` };
-  return { ok: true, url, service: classifyService(host) };
+  return { ok: true, url, pushService: classifyService(host) };
 }

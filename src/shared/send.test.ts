@@ -14,7 +14,7 @@ async function setup() {
     p256dh: subscription.keys.p256dh,
     auth: subscription.keys.auth,
     payload: new TextEncoder().encode('{"title":"hi"}'),
-    ttl: 600,
+    ttlSeconds: 600,
     urgency: "high",
     topic: "unread",
     vapid: {
@@ -43,7 +43,7 @@ test("posts an encrypted, signed message with the protocol headers", async () =>
   const { input, keys, uaPublic, authSecret, uaPrivate } = await setup();
   const fetched = stubFetch(() => new Response(null, { status: 201 }));
 
-  expect(await sendWebPush(input)).toEqual({ kind: "sent", statusCode: 201, attempted: true });
+  expect(await sendWebPush(input)).toEqual({ kind: "sent", providerStatus: 201, attempted: true });
 
   const { url, init } = fetched.request();
   expect(String(url)).toBe(input.endpoint);
@@ -96,8 +96,8 @@ test("classifies responses without retaining their bodies", async () => {
   const { input } = await setup();
   vi.stubGlobal("fetch", async () => new Response("x".repeat(500), { status: 410 }));
   const gone = await sendWebPush(input);
-  expect(gone).toMatchObject({ kind: "gone", statusCode: 410 });
-  expect(gone.error).toMatchObject({ code: "WEB_PUSH_SERVICE_FAILED", providerStatus: 410 });
+  expect(gone).toMatchObject({ kind: "gone", providerStatus: 410 });
+  expect(gone.error).toMatchObject({ code: "WEB_PUSH_PROVIDER_ERROR", providerStatus: 410 });
 
   vi.stubGlobal(
     "fetch",
@@ -133,7 +133,7 @@ test("invalid subscription keys are a permanent failure without a network call",
   const fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   const outcome = await sendWebPush({ ...input, p256dh: base64urlEncode(new Uint8Array(10)) });
-  expect(outcome).toMatchObject({ kind: "permanent", errorKind: "invalid_subscription" });
+  expect(outcome).toMatchObject({ kind: "permanent", errorKind: "invalid_argument" });
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -149,6 +149,38 @@ test("a successful response body is cancelled, not left open", async () => {
     },
   });
   stubFetch(() => new Response(body, { status: 201 }));
-  expect(await sendWebPush(input)).toEqual({ kind: "sent", statusCode: 201, attempted: true });
+  expect(await sendWebPush(input)).toEqual({ kind: "sent", providerStatus: 201, attempted: true });
   expect(cancelled).toBe(true);
+});
+
+test("push failures cancel response bodies without reading or retaining them", async () => {
+  const { subscription } = await makeSubscription();
+  const keys = await generateVapidKeys();
+  const cancel = vi.fn();
+  let pulls = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      pulls++;
+      controller.enqueue(new Uint8Array(1024));
+      if (pulls === 2048) controller.close();
+    },
+    cancel,
+  });
+  vi.stubGlobal("fetch", async () => new Response(body, { status: 410 }));
+  const outcome = await sendWebPush({
+    endpoint: subscription.endpoint,
+    p256dh: subscription.keys.p256dh,
+    auth: subscription.keys.auth,
+    payload: null,
+    ttlSeconds: 60,
+    urgency: "normal",
+    vapid: {
+      publicKey: keys.publicKey,
+      subject: "mailto:ops@example.com",
+      privateKey: await importVapidPrivateKey(keys.publicKey, keys.privateKey),
+    },
+  });
+  expect(cancel).toHaveBeenCalled();
+  expect(pulls).toBeLessThanOrEqual(1);
+  expect(JSON.stringify(outcome)).not.toContain(subscription.endpoint);
 });

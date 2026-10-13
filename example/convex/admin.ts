@@ -1,7 +1,7 @@
 import {
-  vBatchResult,
-  vNotificationResult,
-  vWebPushSubscription,
+  vWebPushBatchCompleteArgs,
+  vWebPushNotificationCompleteArgs,
+  vPushSubscription,
   WebPush,
 } from "@operatornest/convex-web-push";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
@@ -9,7 +9,10 @@ import { v } from "convex/values";
 import { components, internal } from "./_generated/api.js";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server.js";
 
-const webPush = new WebPush(components.webPush);
+const webPush = new WebPush(components.webPush, {
+  onNotificationComplete: internal.results.onNotificationComplete,
+  onBatchComplete: internal.results.onBatchComplete,
+});
 const webPushTest = new WebPush(components.webPush, { testMode: true });
 
 const vCounts = v.object({
@@ -27,84 +30,88 @@ const vUrgency = v.union(
 );
 
 const vNotificationSummary = v.object({
-  id: v.string(),
+  notificationId: v.string(),
   payload: v.string(),
-  options: v.object({ ttl: v.number(), urgency: v.string(), topic: v.optional(v.string()) }),
+  options: v.object({ ttlSeconds: v.number(), urgency: v.string(), topic: v.optional(v.string()) }),
   status: v.string(),
   counts: vCounts,
-  testMode: v.optional(v.boolean()),
+  testMode: v.boolean(),
   createdAt: v.number(),
 });
 
-export const saveSubscription = internalMutation({
+export const recordSubscription = internalMutation({
   args: {
     userId: v.string(),
-    subscription: vWebPushSubscription,
+    subscription: vPushSubscription,
     userAgent: v.optional(v.string()),
   },
   returns: v.object({ subscriptionId: v.string(), created: v.boolean() }),
-  handler: (ctx, args) => webPush.recordSubscription(ctx, args),
+  handler: (ctx, args) => webPush.subscriptions.record(ctx, args),
 });
 
 export const removeSubscription = internalMutation({
   args: { endpoint: v.string(), userId: v.string() },
   returns: v.boolean(),
-  handler: (ctx, args) => webPush.removeSubscription(ctx, args),
+  handler: (ctx, args) => webPush.subscriptions.remove(ctx, args),
 });
 
-export const removeAllForUser = internalMutation({
+export const removeAll = internalMutation({
   args: { userId: v.string() },
   returns: v.object({ removed: v.number(), done: v.boolean() }),
-  handler: (ctx, args) => webPush.removeAllForUser(ctx, args),
+  handler: (ctx, args) => webPush.subscriptions.removeAll(ctx, args),
 });
 
-export const notify = internalMutation({
+export const sendNotification = internalMutation({
   args: {
     userId: v.string(),
     title: v.string(),
     body: v.optional(v.string()),
     url: v.optional(v.string()),
     idempotencyKey: v.optional(v.string()),
-    ttl: v.optional(v.number()),
+    ttlSeconds: v.optional(v.number()),
     urgency: v.optional(vUrgency),
     topic: v.optional(v.string()),
   },
   returns: v.union(v.string(), v.null()),
   handler: (
     ctx,
-    { userId, idempotencyKey, ttl, urgency, topic, ...notification },
+    { userId, idempotencyKey, ttlSeconds, urgency, topic, ...notification },
   ): Promise<string | null> =>
-    webPush.sendNotification(ctx, {
+    webPush.notifications.send(ctx, {
       userId,
       notification,
-      options: {
-        idempotencyKey,
-        ttl,
-        urgency,
-        topic,
-        onComplete: internal.results.onNotificationComplete,
-      },
+      idempotencyKey,
+      ttlSeconds: ttlSeconds ?? 86400,
+      urgency: urgency ?? "normal",
+      topic,
     }),
 });
 
-export const notifyInTestMode = internalMutation({
+export const sendTestNotification = internalMutation({
   args: { userId: v.string(), title: v.string() },
   returns: v.union(v.string(), v.null()),
   handler: (ctx, { userId, title }) =>
-    webPushTest.sendNotification(ctx, { userId, notification: { title } }),
+    webPushTest.notifications.send(ctx, {
+      ttlSeconds: 86400,
+      urgency: "normal",
+      userId,
+      notification: { title },
+    }),
 });
 
-export const notifyRaw = internalMutation({
+export const sendRawNotification = internalMutation({
   args: { userId: v.string(), payload: v.union(v.string(), v.bytes()) },
   returns: v.union(v.string(), v.null()),
   handler: (ctx, { userId, payload }) =>
-    webPush.sendRaw(ctx, {
+    webPush.notifications.sendRaw(ctx, {
+      ttlSeconds: 86400,
+      urgency: "normal",
       userId,
       payload: typeof payload === "string" ? payload : new Uint8Array(payload),
     }),
 });
 
-export const broadcast = internalMutation({
+export const sendBatch = internalMutation({
   args: { userIds: v.array(v.string()), title: v.string(), body: v.optional(v.string()) },
   returns: v.object({
     batchId: v.string(),
@@ -113,62 +120,63 @@ export const broadcast = internalMutation({
     ),
     done: v.boolean(),
   }),
-  handler: (ctx, { userIds, ...notification }): ReturnType<WebPush["sendNotificationBatch"]> =>
-    webPush.sendNotificationBatch(ctx, {
+  handler: (ctx, { userIds, ...notification }): ReturnType<WebPush["notifications"]["sendBatch"]> =>
+    webPush.notifications.sendBatch(ctx, {
+      ttlSeconds: 86400,
+      urgency: "normal",
       userIds,
       notification,
-      options: { onComplete: internal.results.onBatchComplete },
     }),
 });
 
-export const batchProgress = internalQuery({
+export const getBatch = internalQuery({
   args: { batchId: v.string() },
   returns: v.union(
     v.object({
       status: v.union(v.literal("running"), v.literal("done"), v.literal("failed")),
-      errorCode: vBatchResult.fields.errorCode,
+      errorCode: vWebPushBatchCompleteArgs.fields.errorCode,
       total: v.number(),
       processed: v.number(),
       notificationIds: v.array(v.string()),
     }),
     v.null(),
   ),
-  handler: (ctx, args) => webPush.getBatch(ctx, args),
+  handler: (ctx, args) => webPush.notifications.getBatch(ctx, args),
 });
 
-type NotificationRow = Awaited<ReturnType<WebPush["getNotificationsForUser"]>>["page"][number];
+type NotificationRow = Awaited<ReturnType<WebPush["notifications"]["list"]>>["page"][number];
 
 function summarize(n: NotificationRow) {
   return {
-    id: n._id,
+    notificationId: n._id,
     payload: n.payload,
     options: n.options,
     status: n.status,
     counts: n.counts,
     createdAt: n.createdAt,
-    ...(n.testMode !== undefined && { testMode: n.testMode }),
+    testMode: n.testMode,
   };
 }
 
-export const notifications = internalQuery({
+export const listNotifications = internalQuery({
   args: { userId: v.string(), paginationOpts: paginationOptsValidator },
   returns: paginationResultValidator(vNotificationSummary),
   handler: async (ctx, args) => {
-    const result = await webPush.getNotificationsForUser(ctx, args);
+    const result = await webPush.notifications.list(ctx, args);
     return { ...result, page: result.page.map(summarize) };
   },
 });
 
-export const notification = internalQuery({
+export const getNotification = internalQuery({
   args: { notificationId: v.string(), userId: v.string() },
-  returns: v.union(vNotificationSummary, v.null()),
+  returns: vNotificationSummary,
   handler: async (ctx, args) => {
-    const n = await webPush.getNotification(ctx, args);
-    return n ? summarize(n) : null;
+    const n = await webPush.notifications.get(ctx, args);
+    return summarize(n);
   },
 });
 
-type DeliveryRow = Awaited<ReturnType<WebPush["getDeliveries"]>>[number];
+type DeliveryRow = Awaited<ReturnType<WebPush["deliveries"]["list"]>>[number];
 
 function summarizeDelivery(d: DeliveryRow) {
   return {
@@ -178,32 +186,32 @@ function summarizeDelivery(d: DeliveryRow) {
   };
 }
 
-export const deliveries = internalQuery({
+export const listDeliveries = internalQuery({
   args: { notificationId: v.string(), userId: v.string() },
   returns: v.array(
     v.object({ status: v.string(), attempts: v.number(), errorKind: v.optional(v.string()) }),
   ),
   handler: async (ctx, args) => {
-    const rows = await webPush.getDeliveries(ctx, args);
+    const rows = await webPush.deliveries.list(ctx, args);
     return rows.map(summarizeDelivery);
   },
 });
 
-export const completedResults = internalQuery({
-  args: { userId: v.string() },
+export const listNotificationResults = internalQuery({
+  args: { userId: v.string(), testMode: v.boolean() },
   returns: v.array(
     v.object({
       notificationId: v.string(),
-      status: vNotificationResult.fields.status,
+      status: vWebPushNotificationCompleteArgs.fields.status,
       sent: v.number(),
       failed: v.number(),
       gone: v.number(),
     }),
   ),
-  handler: async (ctx, { userId }) => {
+  handler: async (ctx, { userId, testMode }) => {
     const rows = await ctx.db
       .query("notificationResults")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .withIndex("by_userId_and_testMode", (q) => q.eq("userId", userId).eq("testMode", testMode))
       .take(100);
     return rows.map(({ notificationId, status, sent, failed, gone }) => ({
       notificationId,
@@ -215,29 +223,29 @@ export const completedResults = internalQuery({
   },
 });
 
-export const userStatus = internalQuery({
+export const getSubscriptionStatus = internalQuery({
   args: { userId: v.string() },
   returns: v.object({
     subscriptions: v.number(),
     paused: v.number(),
     lastSuccessAt: v.optional(v.number()),
   }),
-  handler: (ctx, args) => webPush.getStatusForUser(ctx, args),
+  handler: (ctx, args) => webPush.subscriptions.getStatus(ctx, args),
 });
 
-export const pause = internalMutation({
+export const pauseSubscriptions = internalMutation({
   args: { userId: v.string() },
   returns: v.number(),
-  handler: (ctx, args) => webPush.pauseNotifications(ctx, args),
+  handler: (ctx, args) => webPush.subscriptions.pause(ctx, args),
 });
 
-export const resume = internalMutation({
+export const resumeSubscriptions = internalMutation({
   args: { userId: v.string() },
   returns: v.number(),
-  handler: (ctx, args) => webPush.resumeNotifications(ctx, args),
+  handler: (ctx, args) => webPush.subscriptions.resume(ctx, args),
 });
 
-export const selfTest = internalAction({
+export const verifyDeliveries = internalAction({
   args: {},
   returns: v.object({
     ok: v.boolean(),
@@ -245,5 +253,5 @@ export const selfTest = internalAction({
     config: v.object({ configured: v.boolean(), problem: v.optional(v.string()) }),
     checks: v.array(v.object({ name: v.string(), ok: v.boolean(), error: v.optional(v.string()) })),
   }),
-  handler: (ctx) => webPush.selfTest(ctx),
+  handler: (ctx) => webPush.deliveries.verify(ctx, {}),
 });

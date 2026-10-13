@@ -4,15 +4,14 @@ import { encryptAes128gcmWithFixedKeys } from "../shared/encrypt.js";
 import { sha256Hex } from "../shared/sha256.js";
 import { RFC8291_VECTOR } from "../shared/vectors.js";
 import { webPushError } from "../shared/errors.js";
-import { isTestMode } from "../shared/config.js";
+import { readConfig, requireVapidConfig, isTestMode } from "../shared/config.js";
 import {
   generateVapidKeys,
   importVapidPrivateKey,
-  readVapidConfig,
   signVapidJwt,
   verifyVapidJwt,
 } from "../shared/vapid.js";
-import { action, env } from "./_generated/server.js";
+import { env, type ActionCtx } from "./_generated/server.js";
 
 const vCheck = v.object({ name: v.string(), ok: v.boolean(), error: v.optional(v.string()) });
 
@@ -29,8 +28,8 @@ function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-export const selfTest = action({
-  args: {},
+export const verificationDefinition = {
+  args: { testMode: v.optional(v.boolean()) },
   returns: v.object({
     ok: v.boolean(),
     testMode: v.boolean(),
@@ -38,7 +37,16 @@ export const selfTest = action({
     config: v.object({ configured: v.boolean(), problem: v.optional(v.string()) }),
     checks: v.array(vCheck),
   }),
-  handler: async () => {
+  handler: async (_ctx: ActionCtx, args: { testMode?: boolean }) => {
+    const parsed = readConfig(env);
+    const testMode = isTestMode(args.testMode, parsed.testMode);
+    if (!testMode) requireVapidConfig(parsed);
+    const config =
+      parsed.publicKey !== undefined &&
+      parsed.privateKey !== undefined &&
+      parsed.subject !== undefined
+        ? requireVapidConfig(parsed)
+        : undefined;
     const checks = [
       await check("sha256 digest", async () => {
         const digest = await crypto.subtle.digest("SHA-256", utf8Encode("abc"));
@@ -93,8 +101,7 @@ export const selfTest = action({
       }),
     ];
 
-    const config = readVapidConfig(env);
-    if (config.ok) {
+    if (config) {
       const { publicKey, privateKey } = config;
       checks.push(
         await check("configured VAPID key pair matches", async () => {
@@ -106,16 +113,21 @@ export const selfTest = action({
           });
           assert(
             (await verifyVapidJwt(jwt, publicKey)) !== null,
-            "VAPID_PUBLIC_KEY does not match VAPID_PRIVATE_KEY",
+            "WEB_PUSH_VAPID_PUBLIC_KEY does not match WEB_PUSH_VAPID_PRIVATE_KEY",
           );
         }),
       );
     }
     return {
       ok: checks.every((c) => c.ok),
-      testMode: isTestMode(undefined, env.WEB_PUSH_TEST_MODE),
-      config: config.ok ? { configured: true } : { configured: false, problem: config.problem },
+      testMode,
+      config: config
+        ? { configured: true }
+        : {
+            configured: false,
+            problem: webPushError("WEB_PUSH_NOT_CONFIGURED").data.message,
+          },
       checks,
     };
   },
-});
+};

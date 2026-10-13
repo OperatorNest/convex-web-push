@@ -75,8 +75,8 @@ test("rejects malformed subscriber keys", async () => {
   wrongPrefix[0] = 2;
   await expect(
     encryptAes128gcm({ plaintext, ...sub, uaPublic: wrongPrefix }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_SUBSCRIPTION" } });
+  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
   await expect(
     encryptAes128gcm({ plaintext, ...sub, authSecret: new Uint8Array(15) }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_SUBSCRIPTION" } });
+  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
 });

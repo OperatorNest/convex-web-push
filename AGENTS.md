@@ -1,56 +1,50 @@
-# Repository rules
+The package is `@operatornest/convex-web-push`, component name `webPush`.
 
-Read `README.md`, `CONTRIBUTING.md`, `SECURITY.md` and `docs/adr/`. Read the local Convex API guidelines at `example/convex/_generated/ai/guidelines.md` before changing Convex functions. Generated AI files are local and gitignored.
+## Scope
 
-## Package boundaries
+Read [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and `docs/adr/` before changing behavior. Domain terms and status transitions are defined in [Concepts](README.md#concepts).
 
-`@operatornest/convex-web-push` mounts as `webPush` with a `workpool` child. Its only runtime dependency is `@convex-dev/workpool`; `convex` and `convex-helpers` are peers.
+The client groups are `subscriptions`, `notifications` and `deliveries`; each group calls its same-named component module. `src/component/` owns rows, functions, queues and cleanup. `src/client/` owns the app-facing client. `src/shared/` owns encryption, signing, admission, bounds, errors and retries. `src/browser/`, `src/sw/` and `sw/` own browser helpers and service workers. `src/test.ts` registers the component with convex-test. `example/convex/` demonstrates authenticated public functions and internal administration. `bin/` and `scripts/` own the Node CLI and development checks.
 
-| Path                             | Responsibility                                                      |
-| -------------------------------- | ------------------------------------------------------------------- |
-| `src/component/`                 | Schema, functions, queue and cleanup.                               |
-| `src/client/`                    | App-facing WebPush client, types and validators.                    |
-| `src/shared/`                    | Encryption, signing, admission, bounds, errors and retry logic.     |
-| `src/browser/`, `src/sw/`, `sw/` | Browser helpers and module/classic service workers.                 |
-| `src/test.ts`                    | Consumer convex-test registration without Vite ambient types.       |
-| `example/convex/`                | Authenticated public wrappers and internal administrative wrappers. |
-| `bin/`, `scripts/`               | Node CLI and development checks.                                    |
+## Runtime and security boundaries
 
-## Runtime and authorization
-
-- Authored `src/` uses Web APIs: no `"use node"`, Node built-ins, `Buffer` or `process`.
-- Read deployed VAPID keys only through generated `env`; never accept the deployed private key as an argument or put it in rows, logs, errors or returns.
-- Errors on caller-reachable paths use `webPushError`. Add each code, fixed message and README row together. Retain no native exception text, provider body or endpoint in error data.
-- App public functions derive `userId` from authenticated `tokenIdentifier`. The component trusts app authorization; functions acting on other users stay internal. Completion callbacks are internal mutations.
-- Check endpoint admission during registration and sending; never follow redirects. Add no runtime dependencies except official `@convex-dev/*` components.
-- Resolve test mode only with `isTestMode`; missing credentials never enable it. Non-test sends fail closed. Batch continuations preserve resolved test mode and recheck configuration and the public-key fingerprint.
-- Each attempt captures a subscription revision. Completion updates health only for the same owner and revision. Purge continuations delete only earlier registration generations.
+- Authored `src/` uses Web APIs; no Node built-ins, `Buffer`, `process` or `"use node"`.
+- The only runtime dependency is `@convex-dev/workpool`; `convex` and `convex-helpers` are peers. Add no runtime dependencies except official `@convex-dev/*` components.
+- Read deployed VAPID keys through generated component env. Never accept the deployed private key as an argument or put it in rows, logs, errors or returns.
+- Parse component env with `readConfig`; malformed values raise `WEB_PUSH_NOT_CONFIGURED`. Resolve test mode with `isTestMode`; an absent decision raises `WEB_PUSH_INVALID_ARGUMENT`. Missing credentials never enable test mode. Non-test sends fail closed.
+- Public app functions derive `userId` from authenticated `tokenIdentifier`. The component trusts app authorization. Functions acting on other users and completion callbacks stay internal.
+- Store resolved `testMode` on every affected row. Reads isolate users and test modes. Batch continuations preserve the resolved value and recheck configuration and the public-key fingerprint.
+- Check endpoint admission during registration and sending; never follow redirects. Each attempt captures a subscription revision. Completion updates health only for the same user, test mode and revision. Purge continuations delete only earlier registration generations.
 - Workpool parallelism comes only from `WEB_PUSH_MAX_PARALLELISM`; retries come only from `planRetry`.
+- Caller-visible errors use `webPushError` with one fixed message per code. Add the code, message and README Errors row together. Retain no native exception text, provider body or endpoint in error data.
 
-## Source invariants
+## Query and validator patterns
 
-- Public functions declare `args` and `returns`; reuse shared validators and `schema.doc`.
-- No `v.any()`, non-null assertions, `as unknown as` or TODOs in authored `src/`. Generated bindings are exempt.
-- Client calls copy declared fields explicitly; caller objects must not override component arguments.
-- Reads use indexes and bounds. Index names list every field in order joined by `_and_`. Use `paginator` with `boundedPage` for history, including endCursor requests. Never use native `.paginate()` in a component or unbounded `.collect()`.
+- Public component functions declare `args` and `returns`; reuse shared validators and `schema.doc`.
+- No `v.any()`, non-null assertions, `as unknown as` or TODOs in authored source; generated bindings are exempt.
+- Client calls copy declared fields explicitly; caller objects cannot override component arguments.
+- Reads use indexes and bounds. Index names list every field in order joined by `_and_`. Indexes for user reads include `testMode` after `userId`.
+- Use `paginator` with `boundedPage` for notification history, including endCursor requests. Never use native `.paginate()` in a component or unbounded `.collect()`.
 - No `Date.now()` in queries or large Promise.all fan-outs in mutations.
-- Validate stored string and array bounds before decoding or storing them. Text cuts use `truncateText` so no surrogate pair is split.
-- Comments state only constraints the code cannot express. Existing lint suppressions require a next-line reason; add no suppression to pass a check.
+- Validate stored string and array bounds before decoding or storing them. Use `truncateText` so text cuts preserve surrogate pairs.
+- Export status unions and document each public method and type with one TSDoc sentence. Other comments state only constraints the code cannot express. Add no lint suppression to pass a check.
 
-## Generated bindings and tools
+## Generated files
 
-Never hand-edit `src/component/_generated/` or `example/convex/_generated/`. Initialize a fresh checkout with `CONVEX_AGENT_MODE=anonymous pnpm exec convex init`, then regenerate with `pnpm build:codegen`. Review tracked generated changes with their source inputs. `dist/` is ignored build output.
+Read `example/convex/_generated/ai/guidelines.md` before changing Convex functions. Generated AI files are local and gitignored.
 
-Use Node 24 and pnpm 12.9.1 through mise. TypeScript 7 builds; TypeScript 6 supports tooling. `exactOptionalPropertyTypes` remains off in the package until convex-helpers pagination compiles with it.
+Never hand-edit `src/component/_generated/` or `example/convex/_generated/`. Initialize a fresh checkout with `CONVEX_AGENT_MODE=anonymous pnpm exec convex init`, then regenerate with `pnpm build:codegen`. Inspect tracked generated changes alongside their source inputs. `dist/` is ignored build output.
 
-Do not edit `pnpm-workspace.yaml`, `knip.json`, `.github/workflows/`, `.mise.toml` or `scripts/with-local-lock.mjs`. Preserve coverage thresholds. Source gates enforce module-scope randomness, index names and client argument spreads.
+## Toolchain and verification
 
-## Verification
+Use Node 24 and pnpm 12.9.1 through mise. TypeScript 7 builds; TypeScript 6 supports tooling. Keep strict, unchecked-index, override and fallthrough checks enabled. `exactOptionalPropertyTypes` is off because convex-helpers pagination ships TypeScript source that fails it; recheck on every convex-helpers upgrade.
 
-Run affected tests and formatting first. Component, schema or shared-runtime changes require `pnpm build:codegen`, `pnpm check` and `pnpm smoke`. Client changes require affected client tests and `pnpm check`. Tooling changes also require `pnpm audit --prod --audit-level high`. Markdown-only changes require `pnpm fmt:check`; executable docs require affected example tests and smoke when they claim runtime behavior.
+Preserve coverage thresholds and the canonical source checks. Do not change `pnpm-workspace.yaml`, `knip.json` or `scripts/with-local-lock.mjs`.
 
-Tests use generated keys and stubbed fetch, never production keys or real push services. Restore fake timers in afterEach; use vi.setSystemTime for time. Vitest resolves the package client to authored source.
+Run affected tests and formatting first. Component, schema and shared runtime changes require `pnpm build:codegen`, `pnpm check` and `pnpm smoke`. Client changes require affected client tests and `pnpm check`. Tooling changes also require `pnpm audit --prod --audit-level high`. Markdown changes require `pnpm fmt:check`; executable examples require affected example tests and smoke for runtime claims.
 
-`build:codegen` and `smoke` take the shared local lock. Smoke removes inherited deployment selectors, starts an isolated anonymous local backend and deletes its workspace. It does not prove live-provider or physical-browser behavior.
+Tests use generated keys and stubbed fetch, never production keys or real push services. Restore fake timers in afterEach and use vi.setSystemTime for time. Vitest resolves the package client to authored source.
 
-Report each executed check and exit code. Publishing, pushing, deploying and registry submissions require explicit authorization. Update README behavior and errors with public changes; add an ADR for contract changes.
+Codegen and smoke take the shared local lock. Smoke removes inherited deployment selectors, starts an isolated anonymous local backend and deletes its workspace. It does not prove live-provider or physical-browser behavior.
+
+Report executed checks and exit codes. Publishing, pushing, deploying and registry submissions require explicit authorization. Update README behavior and errors with public changes; add an ADR for public API or schema changes.

@@ -1,7 +1,8 @@
+import { readConfig, requireVapidConfig } from "../shared/config.js";
 import { webPushError } from "../shared/errors.js";
 import { v } from "convex/values";
 import { base64urlDecode } from "../shared/base64url.js";
-import { readVapidConfig, importVapidPrivateKey, vapidKeyFingerprint } from "../shared/vapid.js";
+import { importVapidPrivateKey, vapidKeyFingerprint } from "../shared/vapid.js";
 import { sendWebPush } from "../shared/send.js";
 import { vSendOutcome, type SendOutcome } from "../shared/validators.js";
 import { internal } from "./_generated/api.js";
@@ -13,10 +14,12 @@ export const run = internalAction({
   handler: async (ctx, { deliveryId }): Promise<SendOutcome> => {
     const job = await ctx.runMutation(internal.deliveries.begin, { deliveryId });
     if (!job.ok) return job.outcome;
-    if (job.testMode === true) return { kind: "sent", statusCode: 0 };
-
-    const config = readVapidConfig(env);
-    if (!config.ok) {
+    let config;
+    try {
+      const parsed = readConfig(env);
+      if (job.testMode === true) return { kind: "sent" };
+      config = requireVapidConfig(parsed);
+    } catch {
       return {
         kind: "permanent",
         errorKind: "vapid_not_configured",
@@ -30,7 +33,7 @@ export const run = internalAction({
       return {
         kind: "gone",
         errorKind: "vapid_key_mismatch",
-        error: webPushError("WEB_PUSH_INVALID_VAPID_KEY").data,
+        error: webPushError("WEB_PUSH_NOT_CONFIGURED").data,
       };
     }
 
@@ -41,7 +44,7 @@ export const run = internalAction({
       return {
         kind: "permanent",
         errorKind: "invalid_vapid_key",
-        error: webPushError("WEB_PUSH_INVALID_VAPID_KEY").data,
+        error: webPushError("WEB_PUSH_NOT_CONFIGURED").data,
       };
     }
 
@@ -57,7 +60,7 @@ export const run = internalAction({
       p256dh: job.p256dh,
       auth: job.auth,
       payload,
-      ttl: job.ttl,
+      ttlSeconds: job.ttlSeconds,
       urgency: job.urgency,
       topic: job.topic,
       allowedPushHosts: job.allowedPushHosts,

@@ -8,8 +8,10 @@ const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
 /** Apple rejects tokens whose exp is more than 24h away. Twelve hours leaves room for clock skew. */
 const VAPID_TOKEN_TTL_SECONDS = 12 * 60 * 60;
 
+/** A VAPID key pair identifies the application server signing push messages. */
 export type VapidKeys = { publicKey: string; privateKey: string };
 
+/** Generate a new P-256 key pair for VAPID application server identification. */
 export async function generateVapidKeys(): Promise<VapidKeys> {
   try {
     const pair = await crypto.subtle.generateKey(ECDSA, true, ["sign", "verify"]);
@@ -24,37 +26,50 @@ export async function generateVapidKeys(): Promise<VapidKeys> {
 
 type Parsed = { ok: true; bytes: Uint8Array<ArrayBuffer> } | { ok: false; problem: string };
 
-function parsePublicKey(publicKey: string): Parsed {
-  if (publicKey.length > 88) return { ok: false, problem: "VAPID_PUBLIC_KEY is too long" };
+const number = (part: Uint8Array) => part.reduce((value, byte) => (value << 8n) + BigInt(byte), 0n);
+
+// Convex mutations cannot await WebCrypto; this checks the public P-256 curve equation.
+export function isP256PublicKey(bytes: Uint8Array): boolean {
+  if (bytes.byteLength !== 65 || bytes[0] !== 4) return false;
+  const x = number(bytes.slice(1, 33));
+  const y = number(bytes.slice(33));
+  const p = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffffn;
+  const b = 0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604bn;
+  return x < p && y < p && (y * y - x * x * x + 3n * x - b) % p === 0n;
+}
+
+export function parsePublicKey(publicKey: string): Parsed {
+  if (publicKey.length > 88) return { ok: false, problem: "WEB_PUSH_VAPID_PUBLIC_KEY is too long" };
   let bytes: Uint8Array<ArrayBuffer>;
   try {
     bytes = base64urlDecode(publicKey);
   } catch {
-    return { ok: false, problem: "VAPID_PUBLIC_KEY is not valid base64url" };
+    return { ok: false, problem: "WEB_PUSH_VAPID_PUBLIC_KEY is not valid base64url" };
   }
-  if (bytes.byteLength !== 65 || bytes[0] !== 4) {
-    return { ok: false, problem: "VAPID_PUBLIC_KEY must be a 65-byte uncompressed point" };
+  if (!isP256PublicKey(bytes)) {
+    return { ok: false, problem: "WEB_PUSH_VAPID_PUBLIC_KEY must be a 65-byte uncompressed point" };
   }
   return { ok: true, bytes };
 }
 
-function parsePrivateKey(privateKey: string): Parsed {
+export function parsePrivateKey(privateKey: string): Parsed {
   if (privateKey.length > 44)
-    return { ok: false, problem: "VAPID_PRIVATE_KEY must decode to exactly 32 bytes" };
+    return { ok: false, problem: "WEB_PUSH_VAPID_PRIVATE_KEY must decode to exactly 32 bytes" };
   let bytes: Uint8Array<ArrayBuffer>;
   try {
     bytes = base64urlDecode(privateKey);
   } catch {
-    return { ok: false, problem: "VAPID_PRIVATE_KEY is not valid base64url" };
+    return { ok: false, problem: "WEB_PUSH_VAPID_PRIVATE_KEY is not valid base64url" };
   }
-  if (bytes.byteLength !== 32) {
-    return { ok: false, problem: "VAPID_PRIVATE_KEY must decode to exactly 32 bytes" };
+  const order = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+  if (bytes.byteLength !== 32 || number(bytes) === 0n || number(bytes) >= order) {
+    return { ok: false, problem: "WEB_PUSH_VAPID_PRIVATE_KEY must decode to exactly 32 bytes" };
   }
   return { ok: true, bytes };
 }
 
 function parseOrThrow(parsed: Parsed): Uint8Array<ArrayBuffer> {
-  if (!parsed.ok) throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
+  if (!parsed.ok) throw webPushError("WEB_PUSH_NOT_CONFIGURED");
   return parsed.bytes;
 }
 
@@ -82,10 +97,10 @@ export async function importVapidPrivateKey(
     const probe = utf8Encode("convex-web-push VAPID key-pair verification");
     const signature = await crypto.subtle.sign(SIGN, privateCryptoKey, probe);
     if (!(await crypto.subtle.verify(SIGN, publicCryptoKey, signature, probe)))
-      throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
+      throw webPushError("WEB_PUSH_NOT_CONFIGURED");
     return privateCryptoKey;
   } catch {
-    throw webPushError("WEB_PUSH_INVALID_VAPID_KEY");
+    throw webPushError("WEB_PUSH_NOT_CONFIGURED");
   }
 }
 
@@ -98,9 +113,9 @@ function importVapidPublicKey(publicKey: string): Promise<CryptoKey> {
 const RESERVED_HOST = /(^|\.)(localhost|local|invalid|test)$/i;
 
 export function validateVapidSubject(subject: string | undefined): string | null {
-  if (!subject) return "VAPID_SUBJECT is not set";
+  if (!subject) return "WEB_PUSH_VAPID_SUBJECT is not set";
   const invalid =
-    "VAPID_SUBJECT must be a control-free mailto address or HTTPS contact URL on a non-reserved host";
+    "WEB_PUSH_VAPID_SUBJECT must be a control-free mailto address or HTTPS contact URL on a non-reserved host";
   if (subject.length > 2048 || /[\p{Cc}\p{Z}]/u.test(subject)) return invalid;
   try {
     const uri = new URL(subject);
@@ -136,40 +151,6 @@ export function validateVapidSubject(subject: string | undefined): string | null
   } catch {
     return invalid;
   }
-}
-
-export type VapidEnv = {
-  readonly VAPID_PUBLIC_KEY?: string | undefined;
-  readonly VAPID_PRIVATE_KEY?: string | undefined;
-  readonly VAPID_SUBJECT?: string | undefined;
-};
-
-export type VapidConfig =
-  | { ok: true; publicKey: string; privateKey: string; subject: string }
-  | { ok: false; problem: string };
-
-export function readVapidConfig(env: VapidEnv): VapidConfig {
-  const {
-    VAPID_PUBLIC_KEY: publicKey,
-    VAPID_PRIVATE_KEY: privateKey,
-    VAPID_SUBJECT: subject,
-  } = env;
-  if (!publicKey) return { ok: false, problem: "VAPID_PUBLIC_KEY is not set" };
-  if (!privateKey) return { ok: false, problem: "VAPID_PRIVATE_KEY is not set" };
-  const pub = parsePublicKey(publicKey);
-  if (!pub.ok) return pub;
-  const priv = parsePrivateKey(privateKey);
-  if (!priv.ok) return priv;
-  const subjectProblem = validateVapidSubject(subject);
-  if (subjectProblem !== null || subject === undefined) {
-    return { ok: false, problem: subjectProblem ?? "VAPID_SUBJECT is not set" };
-  }
-  return {
-    ok: true,
-    publicKey: base64urlEncode(pub.bytes),
-    privateKey: base64urlEncode(priv.bytes),
-    subject,
-  };
 }
 
 export function vapidKeyFingerprint(publicKey: string | undefined): string {
@@ -210,6 +191,7 @@ export function vapidAuthorization(jwt: string, publicKey: string): string {
   return `vapid t=${jwt}, k=${publicKey}`;
 }
 
+/** A verified VAPID token exposes its signed header and audience, expiry and subject claims. */
 export type VerifiedVapidJwt = {
   header: Record<string, unknown>;
   claims: { aud?: string | undefined; exp?: number | undefined; sub?: string | undefined };

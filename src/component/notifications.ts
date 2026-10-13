@@ -7,18 +7,18 @@ import { v, type Infer } from "convex/values";
 import { paginator } from "convex-helpers/server/pagination";
 import { boundedPage, boundedString, validateHosts } from "../shared/bounds.js";
 import { base64urlEncode, base64urlDecode, utf8ByteLength } from "../shared/base64url.js";
-import { isTestMode, readMaxParallelism } from "../shared/config.js";
+import { isTestMode, readConfig, requireVapidConfig } from "../shared/config.js";
 import { MAX_PLAINTEXT_BYTES } from "../shared/encrypt.js";
 import { isWebPushError, webPushError, type WebPushErrorCode } from "../shared/errors.js";
-import { clampTtl, isValidTopic } from "../shared/push.js";
+import { validateTtlSeconds, isValidTopic } from "../shared/push.js";
 import {
   vBatchStatus,
-  vBatchResult,
-  vNotificationResult,
+  vWebPushBatchCompleteArgs,
+  vWebPushNotificationCompleteArgs,
   vSendFields,
   vWebPushError,
 } from "../shared/validators.js";
-import { vapidKeyFingerprint, readVapidConfig } from "../shared/vapid.js";
+import { vapidKeyFingerprint } from "../shared/vapid.js";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { env, internalMutation, mutation, query, type MutationCtx } from "./_generated/server.js";
@@ -36,17 +36,11 @@ function validateSend(args: SendFields, resolvedTestMode?: boolean) {
   validateHosts(args.allowedPushHosts);
   if (args.idempotencyKey !== undefined) boundedString(args.idempotencyKey, 256);
   if (args.onComplete !== undefined) boundedString(args.onComplete, 1024);
-  if (args.ttl !== undefined && !Number.isFinite(args.ttl))
+  if (args.ttlSeconds !== undefined && !Number.isFinite(args.ttlSeconds))
     throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   if (args.payload.length > 5324) throw webPushError("WEB_PUSH_PAYLOAD_TOO_LARGE");
-  const parallelism = readMaxParallelism(env.WEB_PUSH_MAX_PARALLELISM);
-  if (!parallelism.ok) throw webPushError("WEB_PUSH_NOT_CONFIGURED");
-  if (!(resolvedTestMode ?? isTestMode(args.testMode, env.WEB_PUSH_TEST_MODE))) {
-    const config = readVapidConfig(env);
-    if (!config.ok) {
-      throw webPushError("WEB_PUSH_NOT_CONFIGURED");
-    }
-  }
+  const config = readConfig(env);
+  if (!(resolvedTestMode ?? isTestMode(args.testMode, config.testMode))) requireVapidConfig(config);
   let bytes: number;
   if (args.payloadEncoding === "base64url") {
     try {
@@ -54,14 +48,14 @@ function validateSend(args: SendFields, resolvedTestMode?: boolean) {
       bytes = decoded.byteLength;
       args.payload = base64urlEncode(decoded);
     } catch {
-      throw webPushError("WEB_PUSH_INVALID_PAYLOAD");
+      throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
     }
   } else bytes = utf8ByteLength(args.payload);
   if (bytes > MAX_PLAINTEXT_BYTES) {
     throw webPushError("WEB_PUSH_PAYLOAD_TOO_LARGE");
   }
   if (args.topic !== undefined && !isValidTopic(args.topic)) {
-    throw webPushError("WEB_PUSH_INVALID_TOPIC");
+    throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   }
 }
 
@@ -80,18 +74,38 @@ async function enqueueForUser(
     const key = args.idempotencyKey;
     const existing = await ctx.db
       .query("notifications")
-      .withIndex("by_userId_and_idempotencyKey", (q) =>
-        q.eq("userId", userId).eq("idempotencyKey", key),
+      .withIndex("by_userId_and_testMode_and_idempotencyKey", (q) =>
+        q.eq("userId", userId).eq("testMode", testMode).eq("idempotencyKey", key),
       )
       .first();
-    if (existing) return { deferred: false, notificationId: existing._id, cost: 0 };
+    if (existing) {
+      const requestedOptions = {
+        ttlSeconds: validateTtlSeconds(args.ttlSeconds),
+        urgency: args.urgency,
+        topic: args.topic,
+      };
+      if (
+        existing.payload !== args.payload ||
+        existing.payloadEncoding !== args.payloadEncoding ||
+        existing.options.ttlSeconds !== requestedOptions.ttlSeconds ||
+        existing.options.urgency !== requestedOptions.urgency ||
+        existing.options.topic !== requestedOptions.topic ||
+        JSON.stringify(existing.allowedPushHosts ?? []) !==
+          JSON.stringify(args.allowedPushHosts ?? []) ||
+        existing.onComplete !== args.onComplete
+      )
+        throw webPushError("WEB_PUSH_IDEMPOTENCY_CONFLICT");
+      return { deferred: false, notificationId: existing._id, cost: 0 };
+    }
   }
 
   if (budget < MAX_SUBSCRIPTIONS_PER_USER) return { deferred: true };
   const now = Date.now();
   const candidates = await ctx.db
     .query("subscriptions")
-    .withIndex("by_userId_and_status", (q) => q.eq("userId", userId).eq("status", "active"))
+    .withIndex("by_userId_and_testMode_and_status", (q) =>
+      q.eq("userId", userId).eq("testMode", testMode).eq("status", "active"),
+    )
     .take(MAX_SUBSCRIPTIONS_PER_USER);
   const subscriptions = [];
   for (const subscription of candidates) {
@@ -106,8 +120,8 @@ async function enqueueForUser(
     userId,
     payload: args.payload,
     options: {
-      ttl: clampTtl(args.ttl),
-      urgency: args.urgency ?? "normal",
+      ttlSeconds: validateTtlSeconds(args.ttlSeconds),
+      urgency: args.urgency,
       ...(args.topic !== undefined && { topic: args.topic }),
     },
     status: "queued",
@@ -115,7 +129,7 @@ async function enqueueForUser(
     createdAt: now,
     ...(args.payloadEncoding !== undefined && { payloadEncoding: args.payloadEncoding }),
     ...(args.idempotencyKey !== undefined && { idempotencyKey: args.idempotencyKey }),
-    ...(testMode && { testMode: true }),
+    testMode,
     ...(args.allowedPushHosts !== undefined && { allowedPushHosts: args.allowedPushHosts }),
     ...(args.onComplete !== undefined && { onComplete: args.onComplete }),
   });
@@ -129,7 +143,7 @@ async function enqueueForUser(
       status: "queued",
       attempts: 0,
       createdAt: now,
-      ...(testMode && { testMode: true }),
+      testMode,
     });
     await pool.enqueueAction(
       ctx,
@@ -147,13 +161,13 @@ export const send = mutation({
   handler: async (ctx, { userId, ...args }) => {
     boundedString(userId, 256);
     validateSend(args);
-    const testMode = isTestMode(args.testMode, env.WEB_PUSH_TEST_MODE);
+    const testMode = isTestMode(args.testMode, readConfig(env).testMode);
     const result = await enqueueForUser(ctx, userId, args, testMode, BATCH_SUBSCRIPTION_BUDGET);
     return result.deferred ? null : result.notificationId;
   },
 });
 
-const vUserBatchResult = v.object({
+const vUserWebPushBatchCompleteArgs = v.object({
   userId: v.string(),
   notificationId: v.union(v.id("notifications"), v.null()),
 });
@@ -170,6 +184,7 @@ async function finishBatch(
       handle: batch.onComplete,
       result: {
         batchId: batch._id,
+        testMode: batch.testMode,
         status,
         total: batch.userIds.length,
         processed: batch.nextIndex,
@@ -184,14 +199,14 @@ async function advanceBatch(ctx: MutationCtx, batchId: Id<"batches">) {
   if (!batch || batch.status !== "running") return [];
   try {
     validateSend(batch.send, batch.send.testMode === true);
-    if (batch.vapidPublicKeyHash !== vapidKeyFingerprint(env.VAPID_PUBLIC_KEY))
+    if (batch.vapidPublicKeyHash !== vapidKeyFingerprint(readConfig(env).publicKey))
       throw webPushError("WEB_PUSH_NOT_CONFIGURED");
   } catch (error) {
     if (!isWebPushError(error)) throw error;
     await finishBatch(ctx, batch, "failed", error.data.code);
     return [];
   }
-  const results: Infer<typeof vUserBatchResult>[] = [];
+  const results: Infer<typeof vUserWebPushBatchCompleteArgs>[] = [];
   const created = [...batch.notificationIds];
   let index = batch.nextIndex;
   let remaining = BATCH_SUBSCRIPTION_BUDGET;
@@ -227,28 +242,29 @@ export const sendBatch = mutation({
   returns: v.object({
     batchId: v.id("batches"),
 
-    results: v.array(vUserBatchResult),
+    results: v.array(vUserWebPushBatchCompleteArgs),
     done: v.boolean(),
   }),
   handler: async (ctx, { userIds, ...args }) => {
-    if (userIds.length > MAX_BATCH_USERS) throw webPushError("WEB_PUSH_BATCH_TOO_LARGE");
+    if (userIds.length > MAX_BATCH_USERS) throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
     for (const userId of userIds) boundedString(userId, 256);
     const unique = [...new Set(userIds)];
     validateSend(args);
     const batchId = await ctx.db.insert("batches", {
       userIds: unique,
-      vapidPublicKeyHash: vapidKeyFingerprint(env.VAPID_PUBLIC_KEY),
+      testMode: isTestMode(args.testMode, readConfig(env).testMode),
+      vapidPublicKeyHash: vapidKeyFingerprint(readConfig(env).publicKey),
       nextIndex: 0,
       notificationIds: [],
       send: {
         payload: args.payload,
         payloadEncoding: args.payloadEncoding,
-        ttl: args.ttl,
+        ttlSeconds: args.ttlSeconds,
         urgency: args.urgency,
         topic: args.topic,
         idempotencyKey: args.idempotencyKey,
         allowedPushHosts: args.allowedPushHosts,
-        testMode: isTestMode(args.testMode, env.WEB_PUSH_TEST_MODE),
+        testMode: isTestMode(args.testMode, readConfig(env).testMode),
       },
       ...(args.onComplete !== undefined && { onComplete: args.onComplete }),
       status: "running",
@@ -270,20 +286,18 @@ export const continueBatch = internalMutation({
 });
 
 export const getBatch = query({
-  args: { batchId: v.id("batches") },
-  returns: v.union(
-    v.object({
-      status: vBatchStatus,
-      errorCode: v.optional(vWebPushError.fields.code),
-      total: v.number(),
-      processed: v.number(),
-      notificationIds: v.array(v.id("notifications")),
-    }),
-    v.null(),
-  ),
-  handler: async (ctx, { batchId }) => {
+  args: { batchId: v.id("batches"), testMode: v.optional(v.boolean()) },
+  returns: v.object({
+    status: vBatchStatus,
+    errorCode: v.optional(vWebPushError.fields.code),
+    total: v.number(),
+    processed: v.number(),
+    notificationIds: v.array(v.id("notifications")),
+  }),
+  handler: async (ctx, { batchId, testMode }) => {
+    const resolvedTestMode = isTestMode(testMode, readConfig(env).testMode);
     const batch = await ctx.db.get("batches", batchId);
-    if (!batch) return null;
+    if (!batch || batch.testMode !== resolvedTestMode) throw webPushError("WEB_PUSH_NOT_FOUND");
     return {
       status: batch.status,
       ...(batch.errorCode !== undefined && { errorCode: batch.errorCode }),
@@ -295,24 +309,39 @@ export const getBatch = query({
 });
 
 export const get = query({
-  args: { notificationId: v.id("notifications"), userId: v.string() },
-  returns: v.union(schema.doc("notifications"), v.null()),
-  handler: async (ctx, { notificationId, userId }) => {
+  args: {
+    notificationId: v.id("notifications"),
+    userId: v.string(),
+    testMode: v.optional(v.boolean()),
+  },
+  returns: schema.doc("notifications"),
+  handler: async (ctx, { notificationId, userId, testMode }) => {
     boundedString(userId, 256);
     const notification = await ctx.db.get("notifications", notificationId);
-    return notification?.userId === userId ? notification : null;
+    if (
+      notification?.userId !== userId ||
+      notification.testMode !== isTestMode(testMode, readConfig(env).testMode)
+    )
+      throw webPushError("WEB_PUSH_NOT_FOUND");
+    return notification;
   },
 });
 
-export const listForUser = query({
-  args: { userId: v.string(), paginationOpts: paginationOptsValidator },
+export const list = query({
+  args: {
+    userId: v.string(),
+    testMode: v.optional(v.boolean()),
+    paginationOpts: paginationOptsValidator,
+  },
   returns: paginationResultValidator(schema.doc("notifications")),
 
-  handler: (ctx, { userId, paginationOpts }) => {
+  handler: (ctx, { userId, testMode, paginationOpts }) => {
     boundedString(userId, 256);
     return paginator(ctx.db, schema)
       .query("notifications")
-      .withIndex("by_userId_and_createdAt", (q) => q.eq("userId", userId))
+      .withIndex("by_userId_and_testMode_and_createdAt", (q) =>
+        q.eq("userId", userId).eq("testMode", isTestMode(testMode, readConfig(env).testMode)),
+      )
       .order("desc")
       .paginate(boundedPage(paginationOpts));
   },
@@ -321,7 +350,7 @@ export const listForUser = query({
 export const invokeCallback = internalMutation({
   args: {
     handle: v.string(),
-    result: v.union(vNotificationResult, vBatchResult),
+    result: v.union(vWebPushNotificationCompleteArgs, vWebPushBatchCompleteArgs),
   },
   returns: v.null(),
   handler: async (ctx, { handle, result }) => {

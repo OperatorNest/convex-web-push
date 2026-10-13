@@ -91,10 +91,9 @@
     "smoke": "node scripts/smoke.mjs",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
-    "check": "pnpm fmt:check && pnpm build && pnpm lint && pnpm typecheck && pnpm knip && pnpm check:source && pnpm test",
+    "check": "pnpm fmt:check && pnpm build && pnpm lint && pnpm typecheck && pnpm knip && node scripts/check-source.mjs && pnpm test",
     "changeset": "changeset",
-    "knip": "knip --no-progress",
-    "check:source": "node scripts/check-source.mjs"
+    "knip": "knip --no-progress"
   },
   "dependencies": {
     "@convex-dev/workpool": "^0.4.13"

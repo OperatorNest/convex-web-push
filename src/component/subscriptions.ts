@@ -4,8 +4,9 @@ import { base64urlEncode, base64urlDecode } from "../shared/base64url.js";
 import { webPushError } from "../shared/errors.js";
 import { checkPushEndpoint } from "../shared/push.js";
 import { sha256Hex } from "../shared/sha256.js";
-import { vWebPushSubscription } from "../shared/validators.js";
-import { vapidKeyFingerprint } from "../shared/vapid.js";
+import { vPushSubscription } from "../shared/validators.js";
+import { readConfig, requireVapidConfig, isTestMode } from "../shared/config.js";
+import { isP256PublicKey, vapidKeyFingerprint } from "../shared/vapid.js";
 import { internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
 import {
@@ -19,7 +20,7 @@ import {
 import { MAX_SUBSCRIPTIONS_PER_USER, PURGE_BATCH } from "./limits.js";
 
 function invalid(): never {
-  throw webPushError("WEB_PUSH_INVALID_SUBSCRIPTION");
+  throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
 }
 
 function keyBytes(value: string, length: number): Uint8Array<ArrayBuffer> {
@@ -33,24 +34,13 @@ function keyBytes(value: string, length: number): Uint8Array<ArrayBuffer> {
   }
 }
 
-// Convex mutations cannot await WebCrypto; this checks the public P-256 curve equation.
-const number = (part: Uint8Array) => part.reduce((value, byte) => (value << 8n) + BigInt(byte), 0n);
-function validPoint(bytes: Uint8Array): boolean {
-  if (bytes[0] !== 4) return false;
-  const x = number(bytes.slice(1, 33));
-  const y = number(bytes.slice(33));
-  const p = 0xffffffff00000001000000000000000000000000ffffffffffffffffffffffffn;
-  const b = 0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604bn;
-  return x < p && y < p && (y * y - x * x * x + 3n * x - b) % p === 0n;
-}
-
-async function owner(ctx: MutationCtx, userId: string) {
+async function registrationUser(ctx: MutationCtx, userId: string, testMode: boolean) {
   const found = await ctx.db
     .query("subscriptionOwners")
-    .withIndex("by_userId", (q) => q.eq("userId", userId))
+    .withIndex("by_userId_and_testMode", (q) => q.eq("userId", userId).eq("testMode", testMode))
     .unique();
   if (found) return found;
-  const id = await ctx.db.insert("subscriptionOwners", { userId, generation: 0 });
+  const id = await ctx.db.insert("subscriptionOwners", { userId, testMode, generation: 0 });
   const created = await ctx.db.get("subscriptionOwners", id);
   if (!created) throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
   return created;
@@ -59,21 +49,26 @@ async function owner(ctx: MutationCtx, userId: string) {
 async function liveSubscriptions(
   ctx: QueryCtx | MutationCtx,
   userId: string,
+  testMode: boolean,
 ): Promise<{ active: Doc<"subscriptions">[]; paused: Doc<"subscriptions">[] }> {
   boundedString(userId, 256);
   const active = await ctx.db
     .query("subscriptions")
-    .withIndex("by_userId_and_status", (q) => q.eq("userId", userId).eq("status", "active"))
+    .withIndex("by_userId_and_testMode_and_status", (q) =>
+      q.eq("userId", userId).eq("testMode", testMode).eq("status", "active"),
+    )
     .take(MAX_SUBSCRIPTIONS_PER_USER);
   const paused = await ctx.db
     .query("subscriptions")
-    .withIndex("by_userId_and_status", (q) => q.eq("userId", userId).eq("status", "paused"))
+    .withIndex("by_userId_and_testMode_and_status", (q) =>
+      q.eq("userId", userId).eq("testMode", testMode).eq("status", "paused"),
+    )
     .take(MAX_SUBSCRIPTIONS_PER_USER);
   return { active, paused };
 }
 
-async function enforceCap(ctx: MutationCtx, userId: string, now: number) {
-  const { active, paused } = await liveSubscriptions(ctx, userId);
+async function enforceCap(ctx: MutationCtx, userId: string, testMode: boolean, now: number) {
+  const { active, paused } = await liveSubscriptions(ctx, userId, testMode);
   const live = [...active, ...paused].toSorted((a, b) => a._creationTime - b._creationTime);
   const excess = live.length - (MAX_SUBSCRIPTIONS_PER_USER - 1);
   for (const row of live.slice(0, Math.max(excess, 0))) {
@@ -84,12 +79,16 @@ async function enforceCap(ctx: MutationCtx, userId: string, now: number) {
 export const record = mutation({
   args: {
     userId: v.string(),
-    subscription: vWebPushSubscription,
+    testMode: v.optional(v.boolean()),
+    subscription: vPushSubscription,
     userAgent: v.optional(v.string()),
     allowedPushHosts: v.optional(v.array(v.string())),
   },
   returns: v.object({ subscriptionId: v.id("subscriptions"), created: v.boolean() }),
   handler: async (ctx, args) => {
+    const config = readConfig(env);
+    const testMode = isTestMode(args.testMode, config.testMode);
+    if (!testMode) requireVapidConfig(config);
     boundedString(args.userId, 256);
     validateHosts(args.allowedPushHosts);
     const { endpoint, keys, expirationTime } = args.subscription;
@@ -100,31 +99,34 @@ export const record = mutation({
     if (!check.ok) invalid();
     const point = keyBytes(keys.p256dh, 65);
     const auth = keyBytes(keys.auth, 16);
-    if (!validPoint(point)) invalid();
-    const user = await owner(ctx, args.userId);
+    if (!isP256PublicKey(point)) invalid();
+    const user = await registrationUser(ctx, args.userId, testMode);
 
     const now = Date.now();
     const endpointHash = sha256Hex(endpoint);
     const userAgent = args.userAgent === undefined ? undefined : truncateText(args.userAgent, 256);
     const fields = {
       userId: args.userId,
+      testMode,
       p256dh: base64urlEncode(point),
       auth: base64urlEncode(auth),
       generation: user.generation,
-      service: check.service,
-      vapidPublicKeyHash: vapidKeyFingerprint(env.VAPID_PUBLIC_KEY),
+      pushService: check.pushService,
+      vapidPublicKeyHash: vapidKeyFingerprint(config.publicKey),
       consecutiveFailures: 0,
       updatedAt: now,
     };
 
     const existing = await ctx.db
       .query("subscriptions")
-      .withIndex("by_endpointHash", (q) => q.eq("endpointHash", endpointHash))
+      .withIndex("by_endpointHash_and_testMode", (q) =>
+        q.eq("endpointHash", endpointHash).eq("testMode", testMode),
+      )
       .first();
     if (existing && existing.endpoint === endpoint) {
       const keepPaused = existing.status === "paused" && existing.userId === args.userId;
       const alreadyLive = existing.userId === args.userId && existing.status !== "gone";
-      if (!alreadyLive) await enforceCap(ctx, args.userId, now);
+      if (!alreadyLive) await enforceCap(ctx, args.userId, testMode, now);
 
       await ctx.db.patch("subscriptions", existing._id, {
         ...fields,
@@ -136,7 +138,7 @@ export const record = mutation({
       return { subscriptionId: existing._id, created: false };
     }
 
-    await enforceCap(ctx, args.userId, now);
+    await enforceCap(ctx, args.userId, testMode, now);
     const subscriptionId = await ctx.db.insert("subscriptions", {
       ...fields,
       revision: 0,
@@ -152,14 +154,17 @@ export const record = mutation({
 });
 
 export const remove = mutation({
-  args: { endpoint: v.string(), userId: v.string() },
+  args: { endpoint: v.string(), userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: v.boolean(),
-  handler: async (ctx, { endpoint, userId }) => {
+  handler: async (ctx, { endpoint, userId, testMode: requestedTestMode }) => {
+    const testMode = isTestMode(requestedTestMode, readConfig(env).testMode);
     if (endpoint.length === 0 || endpoint.length > 4096 || !endpoint.isWellFormed()) invalid();
     boundedString(userId, 256);
     const existing = await ctx.db
       .query("subscriptions")
-      .withIndex("by_endpointHash", (q) => q.eq("endpointHash", sha256Hex(endpoint)))
+      .withIndex("by_endpointHash_and_testMode", (q) =>
+        q.eq("endpointHash", sha256Hex(endpoint)).eq("testMode", testMode),
+      )
       .first();
     if (!existing || existing.endpoint !== endpoint) return false;
     if (existing.userId !== userId) return false;
@@ -168,49 +173,61 @@ export const remove = mutation({
   },
 });
 
-async function purgeUserBatch(ctx: MutationCtx, userId: string, generation: number) {
+async function purgeUserBatch(
+  ctx: MutationCtx,
+  userId: string,
+  testMode: boolean,
+  generation: number,
+) {
   const rows = await ctx.db
     .query("subscriptions")
-    .withIndex("by_userId_and_generation", (q) =>
-      q.eq("userId", userId).lt("generation", generation),
+    .withIndex("by_userId_and_testMode_and_generation", (q) =>
+      q.eq("userId", userId).eq("testMode", testMode).lt("generation", generation),
     )
     .take(PURGE_BATCH);
   for (const row of rows) await ctx.db.delete("subscriptions", row._id);
   const done = rows.length < PURGE_BATCH;
   if (!done)
-    await ctx.scheduler.runAfter(0, internal.subscriptions.purgeUser, { userId, generation });
+    await ctx.scheduler.runAfter(0, internal.subscriptions.purgeUser, {
+      userId,
+      testMode,
+      generation,
+    });
   return { removed: rows.length, done };
 }
 
 const vPurgeResult = v.object({ removed: v.number(), done: v.boolean() });
 
-export const removeAllForUser = mutation({
-  args: { userId: v.string() },
+export const removeAll = mutation({
+  args: { userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: vPurgeResult,
-  handler: async (ctx, { userId }) => {
+  handler: async (ctx, { userId, testMode: requestedTestMode }) => {
+    const testMode = isTestMode(requestedTestMode, readConfig(env).testMode);
     boundedString(userId, 256);
-    const current = await owner(ctx, userId);
+    const current = await registrationUser(ctx, userId, testMode);
     const generation = current.generation + 1;
     await ctx.db.patch("subscriptionOwners", current._id, { generation });
-    return purgeUserBatch(ctx, userId, generation);
+    return purgeUserBatch(ctx, userId, testMode, generation);
   },
 });
 
 export const purgeUser = internalMutation({
-  args: { userId: v.string(), generation: v.number() },
+  args: { userId: v.string(), testMode: v.boolean(), generation: v.number() },
   returns: vPurgeResult,
-  handler: (ctx, { userId, generation }) => purgeUserBatch(ctx, userId, generation),
+  handler: (ctx, { userId, testMode, generation }) =>
+    purgeUserBatch(ctx, userId, testMode, generation),
 });
 
-export const statusForUser = query({
-  args: { userId: v.string() },
+export const getStatus = query({
+  args: { userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: v.object({
     subscriptions: v.number(),
     paused: v.number(),
     lastSuccessAt: v.optional(v.number()),
   }),
-  handler: async (ctx, { userId }) => {
-    const { active, paused } = await liveSubscriptions(ctx, userId);
+  handler: async (ctx, { userId, testMode: requestedTestMode }) => {
+    const testMode = isTestMode(requestedTestMode, readConfig(env).testMode);
+    const { active, paused } = await liveSubscriptions(ctx, userId, testMode);
     let lastSuccessAt: number | undefined;
     for (const row of [...active, ...paused]) {
       if (row.lastSuccessAt !== undefined && row.lastSuccessAt > (lastSuccessAt ?? 0)) {
@@ -228,13 +245,16 @@ export const statusForUser = query({
 async function moveUserSubscriptions(
   ctx: MutationCtx,
   userId: string,
+  testMode: boolean,
   from: "active" | "paused",
   to: "active" | "paused",
 ) {
   boundedString(userId, 256);
   const rows = await ctx.db
     .query("subscriptions")
-    .withIndex("by_userId_and_status", (q) => q.eq("userId", userId).eq("status", from))
+    .withIndex("by_userId_and_testMode_and_status", (q) =>
+      q.eq("userId", userId).eq("testMode", testMode).eq("status", from),
+    )
     .take(MAX_SUBSCRIPTIONS_PER_USER);
   const now = Date.now();
   for (const row of rows) {
@@ -243,14 +263,38 @@ async function moveUserSubscriptions(
   return rows.length;
 }
 
-export const pauseForUser = mutation({
-  args: { userId: v.string() },
+export const pause = mutation({
+  args: { userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: v.number(),
-  handler: (ctx, { userId }) => moveUserSubscriptions(ctx, userId, "active", "paused"),
+  handler: (ctx, { userId, testMode }) =>
+    moveUserSubscriptions(
+      ctx,
+      userId,
+      isTestMode(testMode, readConfig(env).testMode),
+      "active",
+      "paused",
+    ),
 });
 
-export const resumeForUser = mutation({
-  args: { userId: v.string() },
+export const resume = mutation({
+  args: { userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: v.number(),
-  handler: (ctx, { userId }) => moveUserSubscriptions(ctx, userId, "paused", "active"),
+  handler: (ctx, { userId, testMode }) =>
+    moveUserSubscriptions(
+      ctx,
+      userId,
+      isTestMode(testMode, readConfig(env).testMode),
+      "paused",
+      "active",
+    ),
+});
+
+export const readApplicationServerKey = query({
+  args: { testMode: v.optional(v.boolean()) },
+  returns: v.union(v.string(), v.null()),
+  handler: (_ctx, args) => {
+    const config = readConfig(env);
+    if (!isTestMode(args.testMode, config.testMode)) requireVapidConfig(config);
+    return config.publicKey ?? null;
+  },
 });
