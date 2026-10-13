@@ -97,7 +97,7 @@
     "knip": "knip --no-progress"
   },
   "dependencies": {
-    "@convex-dev/workpool": "^0.4.13"
+    "@convex-dev/workpool": "^0.4.14"
   },
   "devDependencies": {
     "@changesets/cli": "3.0.3",
@@ -108,11 +108,11 @@
     "convex": "1.46.0",
     "convex-helpers": "0.1.128",
     "convex-test": "0.0.61",
-    "knip": "6.40.0",
+    "knip": "6.41.0",
     "oxfmt": "0.72.0",
     "oxlint": "1.87.0",
-    "oxlint-tsgolint": "7.0.2003",
-    "pkg-pr-new": "0.0.90",
+    "oxlint-tsgolint": "7.0.2004",
+    "pkg-pr-new": "0.0.91",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "vitest": "5.0.3"
   },
