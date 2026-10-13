@@ -25,9 +25,17 @@ test("generate-keys prints the three env lines with real keys", async () => {
   expect(lines.get("WEB_PUSH_VAPID_SUBJECT")).toBe("mailto:ops@acme.dev");
 });
 
-test("defaults the subject to a placeholder", async () => {
-  const result = await runCli(["generate-keys"], generateVapidKeys);
-  expect(result.stdout).toContain("WEB_PUSH_VAPID_SUBJECT=mailto:you@example.com");
+test("generate-keys without --subject fails with usage and prints no keys", async () => {
+  const generate = vi.fn(generateVapidKeys);
+  const result = await runCli(["generate-keys"], generate);
+  expect(result).toMatchObject({ code: 1, stdout: "" });
+  expect(result.stderr).toContain("Missing argument: --subject");
+  expect(generate).not.toHaveBeenCalled();
+});
+
+test("generate-keys rejects an example-domain subject", async () => {
+  const result = await runCli(["generate-keys", "--subject", "mailto:you@example.com"]);
+  expect(result.code).toBe(1);
 });
 
 test("rejects unknown commands, arguments and bad subjects", async () => {
@@ -39,7 +47,7 @@ test("rejects unknown commands, arguments and bad subjects", async () => {
 });
 
 test("CLI quotes a contact URI containing shell metacharacters", async () => {
-  const subject = "https://example.com/contact?x=1&y=2";
+  const subject = "https://acme.dev/contact?x=1&y=2";
   const result = await runCli(["generate-keys", "--subject", subject]);
   expect(result.stdout).toContain("WEB_PUSH_VAPID_SUBJECT '" + subject + "'");
   expect(result.stdout).toContain("WEB_PUSH_VAPID_PUBLIC_KEY '<value>'");

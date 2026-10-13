@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { internal, api } from "./_generated/api.js";
 import { type Id } from "./_generated/dataModel.js";
-import { drain, makeSubscription, setupTest, type TestCtx } from "../test-helpers.js";
+import { type TestCtx, drain, makeSubscription, setupSimulatedTest } from "../test-helpers.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -53,7 +53,7 @@ async function addDelivery(
 }
 
 test("deletes finished deliveries past retention and keeps recent and unfinished ones", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const ids = await seed(t);
   const old = await addDelivery(t, ids, "sent", 8);
   const recent = await addDelivery(t, ids, "sent", 1);
@@ -70,7 +70,7 @@ test("deletes finished deliveries past retention and keeps recent and unfinished
 });
 
 test("deletes finished notifications past retention but keeps unfinished ones", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { notificationId } = await seed(t);
   const insert = (status: "delivered" | "failed" | "queued" | "partial", ageDays: number) =>
     t.run((ctx) =>
@@ -103,7 +103,7 @@ test("deletes finished notifications past retention but keeps unfinished ones", 
 });
 
 test("deletes gone subscriptions after a week", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscriptionId } = await seed(t);
   await t.run((ctx) =>
     ctx.db.patch("subscriptions", subscriptionId, { status: "gone", updatedAt: now - 8 * DAY }),
@@ -120,7 +120,7 @@ test("deletes gone subscriptions after a week", async () => {
 });
 
 test("caps the combined delete count per transaction and continues later", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const ids = await seed(t);
   for (let i = 0; i < 600; i++) await addDelivery(t, ids, "sent", 9);
   const first = await t.mutation(internal.cleanup.run, { now });
@@ -136,7 +136,7 @@ test("caps the combined delete count per transaction and continues later", async
 });
 
 test("removes finished batch records after retention", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const insert = (status: "done" | "running", ageDays: number) =>
     t.run((ctx) =>
       ctx.db.insert("batches", {
@@ -158,7 +158,7 @@ test("removes finished batch records after retention", async () => {
 });
 
 test("cleanup removes a running batch after 35 days", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const batchId = await t.run((ctx) =>
     ctx.db.insert("batches", {
       testMode: true,

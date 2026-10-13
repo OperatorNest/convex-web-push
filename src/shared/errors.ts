@@ -1,6 +1,7 @@
 import { ConvexError } from "convex/values";
 import { truncateText } from "./bounds.js";
 
+// repository-codes:begin
 export const WEB_PUSH_ERROR_CODES = [
   "WEB_PUSH_NOT_CONFIGURED",
   "WEB_PUSH_INVALID_ARGUMENT",
@@ -16,16 +17,10 @@ export const WEB_PUSH_ERROR_CODES = [
   "WEB_PUSH_BROWSER_FAILED",
 ] as const;
 
-/** A Web Push error code identifies a fixed caller-visible failure. */
-export type WebPushErrorCode = (typeof WEB_PUSH_ERROR_CODES)[number];
-/** Web Push error data contains a fixed message and bounded provider failure details. */
-export type WebPushErrorData = {
-  code: WebPushErrorCode;
-  message: string;
-  retryable?: boolean;
-  providerStatus?: number;
-  providerCode?: string;
-};
+const WEB_PUSH_PROVIDER_ERROR_CODES = [
+  "WEB_PUSH_PROVIDER_ERROR",
+  "WEB_PUSH_NETWORK_ERROR",
+] as const satisfies readonly WebPushErrorCode[];
 
 const WEB_PUSH_ERROR_MESSAGES = {
   WEB_PUSH_NOT_CONFIGURED:
@@ -44,15 +39,49 @@ const WEB_PUSH_ERROR_MESSAGES = {
     "A service worker operation failed; verify its scope and notification options.",
   WEB_PUSH_BROWSER_FAILED: "The browser could not complete the push subscription operation.",
 } as const satisfies Record<WebPushErrorCode, string>;
+// repository-codes:end
 
-export function webPushError(
-  code: WebPushErrorCode,
-  details?: Pick<WebPushErrorData, "retryable" | "providerStatus" | "providerCode">,
+const ERROR_DATA_KEYS: ReadonlySet<string> = new Set([
+  "code",
+  "message",
+  "retryable",
+  "providerStatus",
+  "providerCode",
+]);
+
+/** One fixed caller-visible failure; `WEB_PUSH_ERROR_CODES` lists every code. */
+export type WebPushErrorCode = (typeof WEB_PUSH_ERROR_CODES)[number];
+
+/** Error data: the code, its fixed message and bounded provider failure details. `retryable` is present exactly on provider-originated codes. */
+export type WebPushErrorData = {
+  code: WebPushErrorCode;
+  message: string;
+  retryable?: boolean;
+  providerStatus?: number;
+  providerCode?: string;
+};
+
+type ProviderErrorCode = (typeof WEB_PUSH_PROVIDER_ERROR_CODES)[number];
+
+type ErrorDetails<Code extends WebPushErrorCode> = [Code] extends [
+  Exclude<WebPushErrorCode, ProviderErrorCode>,
+]
+  ? [details?: { retryable?: never; providerStatus?: number; providerCode?: string }]
+  : [details: { retryable: boolean; providerStatus?: number; providerCode?: string }];
+
+function isProviderErrorCode(code: unknown): code is ProviderErrorCode {
+  return WEB_PUSH_PROVIDER_ERROR_CODES.some((candidate) => candidate === code);
+}
+
+/** Creates the error for `code` with its fixed message. Provider-originated codes require `details.retryable`; other codes forbid it. `providerCode` is truncated to 64 characters. */
+export function webPushError<Code extends WebPushErrorCode>(
+  code: Code,
+  ...[details]: ErrorDetails<Code>
 ): ConvexError<WebPushErrorData> {
   return new ConvexError({
     code,
     message: WEB_PUSH_ERROR_MESSAGES[code],
-    ...((code === "WEB_PUSH_PROVIDER_ERROR" || code === "WEB_PUSH_NETWORK_ERROR") &&
+    ...(isProviderErrorCode(code) &&
       details?.retryable !== undefined && { retryable: details.retryable }),
     ...(details?.providerStatus !== undefined && { providerStatus: details.providerStatus }),
     ...(details?.providerCode !== undefined && {
@@ -61,30 +90,29 @@ export function webPushError(
   });
 }
 
-/** Recognize fixed Web Push errors with valid provider failure details. */
+/** Returns true when `error` carries exactly a known code, its fixed message, `retryable` on provider-originated codes only, and well-formed provider details. */
 export function isWebPushError(error: unknown): error is ConvexError<WebPushErrorData> {
   if (!(error instanceof ConvexError)) return false;
   const data: unknown = error.data;
+  if (typeof data !== "object" || data === null || !("code" in data) || !("message" in data))
+    return false;
+  const { code, message } = data;
   return (
-    typeof data === "object" &&
-    data !== null &&
-    "code" in data &&
-    "message" in data &&
-    typeof data.message === "string" &&
+    Object.keys(data).every((key) => ERROR_DATA_KEYS.has(key)) &&
     WEB_PUSH_ERROR_CODES.some(
-      (code) => code === data.code && data.message === WEB_PUSH_ERROR_MESSAGES[code],
+      (candidate) => candidate === code && message === WEB_PUSH_ERROR_MESSAGES[candidate],
     ) &&
-    (!("retryable" in data) ||
-      ((data.code === "WEB_PUSH_PROVIDER_ERROR" || data.code === "WEB_PUSH_NETWORK_ERROR") &&
-        typeof data.retryable === "boolean")) &&
-    (!("providerCode" in data) ||
-      (typeof data.providerCode === "string" &&
-        data.providerCode.isWellFormed() &&
-        data.providerCode.length <= 64)) &&
+    ("retryable" in data
+      ? isProviderErrorCode(code) && typeof data.retryable === "boolean"
+      : !isProviderErrorCode(code)) &&
     (!("providerStatus" in data) ||
       (typeof data.providerStatus === "number" &&
         Number.isInteger(data.providerStatus) &&
         data.providerStatus >= 100 &&
-        data.providerStatus <= 599))
+        data.providerStatus <= 599)) &&
+    (!("providerCode" in data) ||
+      (typeof data.providerCode === "string" &&
+        data.providerCode.isWellFormed() &&
+        data.providerCode.length <= 64))
   );
 }

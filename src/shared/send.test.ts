@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { base64urlEncode, bytesEqual } from "./base64url.js";
 import { sendWebPush, type SendWebPushInput } from "./send.js";
 import { generateVapidKeys, importVapidPrivateKey, verifyVapidJwt } from "./vapid.js";
-import { decryptAes128gcm, makeSubscription } from "../test-helpers.js";
+import { decryptAes128gcm, makeSubscription, required, stubFetch } from "../test-helpers.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -19,34 +19,21 @@ async function setup() {
     topic: "unread",
     vapid: {
       publicKey: keys.publicKey,
-      subject: "mailto:ops@example.com",
+      subject: "mailto:ops@acme.dev",
       privateKey: await importVapidPrivateKey(keys.publicKey, keys.privateKey),
     },
   };
   return { input, keys, uaPublic, authSecret, uaPrivate };
 }
 
-function stubFetch(respond: (init: RequestInit) => Response | Promise<Response>) {
-  const mock = vi.fn(async (_url: URL, init: RequestInit) => respond(init));
-  vi.stubGlobal("fetch", mock);
-  return {
-    mock,
-    request() {
-      const call = mock.mock.calls[0];
-      if (!call) throw new Error("fetch was not called");
-      return { url: call[0], init: call[1] };
-    },
-  };
-}
-
 test("posts an encrypted, signed message with the protocol headers", async () => {
   const { input, keys, uaPublic, authSecret, uaPrivate } = await setup();
-  const fetched = stubFetch(() => new Response(null, { status: 201 }));
+  const calls = stubFetch(() => new Response(null, { status: 201 }));
 
   expect(await sendWebPush(input)).toEqual({ kind: "sent", providerStatus: 201, attempted: true });
 
-  const { url, init } = fetched.request();
-  expect(String(url)).toBe(input.endpoint);
+  const { url, init } = required(calls[0], "the push request");
+  expect(url).toBe(input.endpoint);
   expect(init.method).toBe("POST");
   expect(init.redirect).toBe("manual");
   const headers = new Headers(init.headers);
@@ -62,7 +49,7 @@ test("posts an encrypted, signed message with the protocol headers", async () =>
   const verified = await verifyVapidJwt(match?.[1] ?? "", keys.publicKey);
   expect(verified?.claims).toMatchObject({
     aud: "https://fcm.googleapis.com",
-    sub: "mailto:ops@example.com",
+    sub: "mailto:ops@acme.dev",
   });
   expect(init.body).toBeInstanceOf(Uint8Array);
   const plaintext = await decryptAes128gcm(
@@ -76,20 +63,19 @@ test("posts an encrypted, signed message with the protocol headers", async () =>
 
 test("an empty payload sends no body and no Content-Encoding", async () => {
   const { input } = await setup();
-  const fetched = stubFetch(() => new Response(null, { status: 201 }));
+  const calls = stubFetch(() => new Response(null, { status: 201 }));
   await sendWebPush({ ...input, payload: null });
-  const { init } = fetched.request();
+  const { init } = required(calls[0], "the push request");
   expect(init.body).toBeNull();
   expect(new Headers(init.headers).has("Content-Encoding")).toBe(false);
 });
 
 test("never calls fetch for an endpoint outside the allowlist", async () => {
   const { input } = await setup();
-  const fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
+  const calls = stubFetch(() => new Response(null, { status: 201 }));
   const outcome = await sendWebPush({ ...input, endpoint: "https://evil.example.com/x" });
   expect(outcome).toMatchObject({ kind: "permanent", errorKind: "endpoint_not_allowed" });
-  expect(fetchMock).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
 });
 
 test("classifies responses without retaining their bodies", async () => {
@@ -130,11 +116,10 @@ test("network errors and timeouts are retryable", async () => {
 
 test("invalid subscription keys are a permanent failure without a network call", async () => {
   const { input } = await setup();
-  const fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
+  const calls = stubFetch(() => new Response(null, { status: 201 }));
   const outcome = await sendWebPush({ ...input, p256dh: base64urlEncode(new Uint8Array(10)) });
-  expect(outcome).toMatchObject({ kind: "permanent", errorKind: "invalid_argument" });
-  expect(fetchMock).not.toHaveBeenCalled();
+  expect(outcome).toMatchObject({ kind: "permanent", errorKind: "invalid_subscription_keys" });
+  expect(calls).toHaveLength(0);
 });
 
 test("a successful response body is cancelled, not left open", async () => {
@@ -176,7 +161,7 @@ test("push failures cancel response bodies without reading or retaining them", a
     urgency: "normal",
     vapid: {
       publicKey: keys.publicKey,
-      subject: "mailto:ops@example.com",
+      subject: "mailto:ops@acme.dev",
       privateKey: await importVapidPrivateKey(keys.publicKey, keys.privateKey),
     },
   });

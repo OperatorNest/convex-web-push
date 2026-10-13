@@ -11,6 +11,7 @@ import {
   vapidKeyFingerprint,
   verifyVapidJwt,
 } from "./vapid.js";
+import { expectWebPushError } from "../test-helpers.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -33,7 +34,7 @@ test("signs an ES256 JWT that verifies with the public key", async () => {
   const now = Date.UTC(2026, 9, 4, 12, 0, 0);
   const jwt = await signVapidJwt({
     audience: "https://fcm.googleapis.com",
-    subject: "mailto:ops@example.com",
+    subject: "mailto:ops@acme.dev",
     privateKey: key,
     now,
   });
@@ -45,7 +46,7 @@ test("signs an ES256 JWT that verifies with the public key", async () => {
   });
   const verified = await verifyVapidJwt(jwt, keys.publicKey);
   expect(verified?.claims.aud).toBe("https://fcm.googleapis.com");
-  expect(verified?.claims.sub).toBe("mailto:ops@example.com");
+  expect(verified?.claims.sub).toBe("mailto:ops@acme.dev");
   const exp = verified!.claims.exp!;
   expect(exp).toBeGreaterThan(now / 1000);
   expect(exp - now / 1000).toBeLessThanOrEqual(24 * 60 * 60);
@@ -74,16 +75,15 @@ test("rejects a tampered token and a different key", async () => {
 test("rejects a private scalar with a missing byte", async () => {
   const keys = await generateVapidKeys();
   const short = base64urlEncode(base64urlDecode(keys.privateKey).slice(1));
-  await expect(importVapidPrivateKey(keys.publicKey, short)).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_NOT_CONFIGURED" },
-  });
+  await expectWebPushError(importVapidPrivateKey(keys.publicKey, short), "WEB_PUSH_NOT_CONFIGURED");
 });
 
 test("rejects malformed keys without echoing them", async () => {
   const keys = await generateVapidKeys();
-  await expect(importVapidPrivateKey("short", keys.privateKey)).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_NOT_CONFIGURED" },
-  });
+  await expectWebPushError(
+    importVapidPrivateKey("short", keys.privateKey),
+    "WEB_PUSH_NOT_CONFIGURED",
+  );
   const secret = base64urlEncode(new Uint8Array(40).fill(9));
   const error = await importVapidPrivateKey(keys.publicKey, secret).then(
     () => undefined,
@@ -103,9 +103,7 @@ test("the key fingerprint is short, stable and says none when unset", async () =
 test("generateVapidKeys fails with a typed error when WebCrypto hides the scalar", async () => {
   const exportKey = vi.spyOn(crypto.subtle, "exportKey").mockResolvedValue({ kty: "EC" });
   try {
-    await expect(generateVapidKeys()).rejects.toMatchObject({
-      data: { code: "WEB_PUSH_CRYPTO_UNSUPPORTED" },
-    });
+    await expectWebPushError(generateVapidKeys(), "WEB_PUSH_CRYPTO_UNSUPPORTED");
   } finally {
     exportKey.mockRestore();
   }
@@ -116,14 +114,24 @@ test("builds the vapid Authorization header", () => {
 });
 
 test("validates the subject the way Apple does", () => {
-  expect(validateVapidSubject("mailto:ops@example.com")).toBeNull();
-  expect(validateVapidSubject("https://example.com/contact")).toBeNull();
+  expect(validateVapidSubject("mailto:ops@acme.dev")).toBeNull();
+  expect(validateVapidSubject("https://acme.dev/contact")).toBeNull();
   expect(validateVapidSubject(undefined)).not.toBeNull();
   expect(validateVapidSubject("ops@example.com")).not.toBeNull();
   expect(validateVapidSubject("mailto:ops")).not.toBeNull();
   expect(validateVapidSubject("mailto:ops@corp.local")).not.toBeNull();
   expect(validateVapidSubject("https://localhost:3000")).not.toBeNull();
   expect(validateVapidSubject("mailto:a@site.invalid")).not.toBeNull();
+});
+
+test.each([
+  "mailto:you@example.com",
+  "mailto:ops@mail.example.net",
+  "https://example.org/contact",
+  "https://www.example.com/contact",
+  "mailto:ops@site.example",
+])("rejects reserved example-domain subject %j", (subject) => {
+  expect(validateVapidSubject(subject)).not.toBeNull();
 });
 
 test("equivalent public key encodings have the same fingerprint", async () => {
@@ -136,16 +144,14 @@ test.each([
   "mailto:a@localhost.",
   "https://localhost./contact",
   "mailto:a@localhost?subject=x",
-  "mailto:a@example.com\nWEB_PUSH_TEST_MODE=true",
+  "mailto:a@acme.dev\nWEB_PUSH_TEST_MODE=true",
 ])("rejects malformed contact URI %j", (subject) => {
   expect(validateVapidSubject(subject)).not.toBeNull();
 });
 
 test("key generation translates WebCrypto rejection", async () => {
   vi.spyOn(crypto.subtle, "generateKey").mockRejectedValue(new Error("unsupported"));
-  await expect(generateVapidKeys()).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_CRYPTO_UNSUPPORTED" },
-  });
+  await expectWebPushError(generateVapidKeys(), "WEB_PUSH_CRYPTO_UNSUPPORTED");
 });
 
 test.each([1, 31])("VAPID rejects a %s-byte private scalar", async (size) => {
@@ -155,10 +161,11 @@ test.each([1, 31])("VAPID rejects a %s-byte private scalar", async (size) => {
     readConfig({
       WEB_PUSH_VAPID_PUBLIC_KEY: keys.publicKey,
       WEB_PUSH_VAPID_PRIVATE_KEY: privateKey,
-      WEB_PUSH_VAPID_SUBJECT: "mailto:ops@example.com",
+      WEB_PUSH_VAPID_SUBJECT: "mailto:ops@acme.dev",
     }),
   ).toThrow();
-  await expect(importVapidPrivateKey(keys.publicKey, privateKey)).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_NOT_CONFIGURED" },
-  });
+  await expectWebPushError(
+    importVapidPrivateKey(keys.publicKey, privateKey),
+    "WEB_PUSH_NOT_CONFIGURED",
+  );
 });

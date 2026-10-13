@@ -47,9 +47,13 @@ self.addEventListener("notificationclick", (event) => {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const exact = windows.find((client) => client.url === target);
       if (exact) return exact.focus();
-      if (windows[0]) {
-        if (windows[0].navigate) await windows[0].navigate(target);
-        return windows[0].focus();
+      const firstWindow = windows[0];
+      if (firstWindow && firstWindow.navigate) {
+        const navigated = await firstWindow.navigate(target).then(
+          () => true,
+          () => false,
+        );
+        if (navigated) return firstWindow.focus();
       }
       return self.clients.openWindow(target);
     })(),

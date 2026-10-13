@@ -3,7 +3,7 @@ import { validateVapidSubject, generateVapidKeys, type VapidKeys } from "./vapid
 /** A CLI result carries the exit code and text written to standard output and error. */
 export type CliResult = { code: number; stdout: string; stderr: string };
 
-const USAGE = `Usage: convex-web-push generate-keys [--subject mailto:you@example.com]
+const USAGE = `Usage: convex-web-push generate-keys --subject <mailto-address-or-https-url>
 
 Prints WEB_PUSH_VAPID_PUBLIC_KEY, WEB_PUSH_VAPID_PRIVATE_KEY and WEB_PUSH_VAPID_SUBJECT as env lines.
 `;
@@ -28,7 +28,7 @@ export async function runCli(
   if (command !== "generate-keys") {
     return { code: 1, stdout: "", stderr: `Unknown command: ${command}\n${USAGE}` };
   }
-  let subject = "mailto:you@example.com";
+  let subject: string | undefined;
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
     const next = rest[i + 1];
@@ -38,8 +38,9 @@ export async function runCli(
     } else if (arg?.startsWith("--subject=")) subject = arg.slice("--subject=".length);
     else return { code: 1, stdout: "", stderr: `Unknown argument: ${arg}\n${USAGE}` };
   }
-  const subjectProblem =
-    subject === "mailto:you@example.com" ? null : validateVapidSubject(subject);
+  if (subject === undefined)
+    return { code: 1, stdout: "", stderr: `Missing argument: --subject\n${USAGE}` };
+  const subjectProblem = validateVapidSubject(subject);
   if (subjectProblem) return { code: 1, stdout: "", stderr: `${subjectProblem}\n` };
   const stdout = `${formatEnvLines(await generate(), subject)}
 Set them on your Convex deployment, for example:

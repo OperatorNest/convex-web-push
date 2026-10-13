@@ -6,16 +6,20 @@ import { verifyVapidJwt } from "../shared/vapid.js";
 import { api, internal } from "./_generated/api.js";
 import { type Id } from "./_generated/dataModel.js";
 import {
+  type TestCtx,
   configureVapid,
   decryptAes128gcm,
   drain,
   expectWebPushError,
   makeSubscription,
+  requestBody,
+  requestHeaders,
   required,
   respond,
-  setupTest,
+  respondInOrder,
+  setupLiveTest,
+  setupSimulatedTest,
   stubFetch,
-  type TestCtx,
 } from "../test-helpers.js";
 
 beforeEach(() => vi.useFakeTimers());
@@ -65,7 +69,10 @@ async function deliveryForUser(t: TestCtx, userId: string) {
 
 async function finished(t: TestCtx, notificationId: Id<"notifications">) {
   await drain(t);
-  const notification = required(await t.run((ctx) => ctx.db.get("notifications", notificationId)));
+  const notification = required(
+    await t.run((ctx) => ctx.db.get("notifications", notificationId)),
+    "the notification row",
+  );
   const deliveries = await t.run((ctx) =>
     ctx.db
       .query("deliveries")
@@ -76,8 +83,8 @@ async function finished(t: TestCtx, notificationId: Id<"notifications">) {
 }
 
 test("test mode records a send without calling fetch", async () => {
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest();
+  const calls = stubFetch(respond(201));
+  const t = setupSimulatedTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -85,18 +92,18 @@ test("test mode records a send without calling fetch", async () => {
     userId: "u1",
     payload: '{"title":"hi"}',
   });
-  const { notification, deliveries } = await finished(t, required(id));
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
   expect(notification.status).toBe("delivered");
   expect(notification.counts).toEqual({ queued: 0, sent: 1, failed: 0, gone: 0 });
   expect(deliveries[0]).toMatchObject({ status: "sent", attempts: 1 });
   expect(deliveries[0]).not.toHaveProperty("providerStatus");
-  expect(mock).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
 });
 
 test("an explicit testMode wins over configured credentials", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   const sub = await makeSubscription();
   await t.mutation(api.subscriptions.record, {
     userId: "u1",
@@ -110,14 +117,16 @@ test("an explicit testMode wins over configured credentials", async () => {
     payload: "x",
     testMode: true,
   });
-  expect((await finished(t, required(id))).notification.status).toBe("delivered");
-  expect(mock).not.toHaveBeenCalled();
+  expect((await finished(t, required(id, "the notification id"))).notification.status).toBe(
+    "delivered",
+  );
+  expect(calls).toHaveLength(0);
 });
 
 test("sends an encrypted, signed request with TTL, Urgency and Topic", async () => {
   const keys = await configureVapid();
-  const fetched = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   const sub = await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     userId: "u1",
@@ -126,13 +135,13 @@ test("sends an encrypted, signed request with TTL, Urgency and Topic", async () 
     urgency: "high",
     topic: "unread",
   });
-  const { notification, deliveries } = await finished(t, required(id));
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
   expect(notification.status).toBe("delivered");
   expect(deliveries[0]).toMatchObject({ status: "sent", providerStatus: 201 });
 
-  expect(fetched.mock).toHaveBeenCalledTimes(1);
-  expect(String(required(fetched.calls[0]).url)).toBe(sub.subscription.endpoint);
-  const headers = fetched.headers();
+  expect(calls).toHaveLength(1);
+  expect(required(calls[0], "the push request").url).toBe(sub.subscription.endpoint);
+  const headers = requestHeaders(calls);
   expect(headers.get("Urgency")).toBe("high");
   expect(headers.get("Topic")).toBe("unread");
   expect(headers.get("Content-Encoding")).toBe("aes128gcm");
@@ -142,10 +151,10 @@ test("sends an encrypted, signed request with TTL, Urgency and Topic", async () 
   const verified = await verifyVapidJwt(jwt, keys.publicKey);
   expect(verified?.claims).toMatchObject({
     aud: "https://fcm.googleapis.com",
-    sub: "mailto:ops@example.com",
+    sub: "mailto:ops@acme.dev",
   });
   const plaintext = await decryptAes128gcm(
-    required(fetched.body()),
+    required(requestBody(calls), "the request body"),
     sub.uaPrivate,
     sub.uaPublic,
     sub.authSecret,
@@ -158,8 +167,8 @@ test("sends an encrypted, signed request with TTL, Urgency and Topic", async () 
 
 test("sendRaw style base64url payloads are sent as the original bytes", async () => {
   await configureVapid();
-  const fetched = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   const sub = await subscribe(t);
   const bytes = new Uint8Array([0, 255, 128, 7]);
   const id = await t.mutation(api.notifications.send, {
@@ -169,9 +178,9 @@ test("sendRaw style base64url payloads are sent as the original bytes", async ()
     payload: base64urlEncode(bytes),
     payloadEncoding: "base64url",
   });
-  await finished(t, required(id));
+  await finished(t, required(id, "the notification id"));
   const plaintext = await decryptAes128gcm(
-    required(fetched.body()),
+    required(requestBody(calls), "the request body"),
     sub.uaPrivate,
     sub.uaPublic,
     sub.authSecret,
@@ -181,8 +190,8 @@ test("sendRaw style base64url payloads are sent as the original bytes", async ()
 
 test("an empty payload is sent as a bodyless push", async () => {
   await configureVapid();
-  const fetched = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -190,14 +199,14 @@ test("an empty payload is sent as a bodyless push", async () => {
     userId: "u1",
     payload: "",
   });
-  await finished(t, required(id));
-  expect(fetched.body()).toBeNull();
+  await finished(t, required(id, "the notification id"));
+  expect(requestBody(calls)).toBeNull();
 });
 
 test.each([404, 410])("%i marks the subscription gone and is not retried", async (status) => {
   await configureVapid();
-  const { mock } = stubFetch(respond(status));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(status));
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -205,8 +214,8 @@ test.each([404, 410])("%i marks the subscription gone and is not retried", async
     userId: "u1",
     payload: "x",
   });
-  const { notification, deliveries } = await finished(t, required(id));
-  expect(mock).toHaveBeenCalledTimes(1);
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(1);
   expect(deliveries[0]).toMatchObject({
     status: "gone",
     providerStatus: status,
@@ -217,7 +226,7 @@ test.each([404, 410])("%i marks the subscription gone and is not retried", async
     counts: { queued: 0, sent: 0, failed: 0, gone: 1 },
   });
   const userStatus = await t.query(api.subscriptions.getStatus, { userId: "u1" });
-  expect(userStatus.subscriptions).toBe(0);
+  expect(userStatus.activeCount).toBe(0);
   expect(
     await t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
@@ -230,8 +239,8 @@ test.each([404, 410])("%i marks the subscription gone and is not retried", async
 
 test("a permanent error is not retried and records fixed error data", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(400));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(400));
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -239,8 +248,8 @@ test("a permanent error is not retried and records fixed error data", async () =
     userId: "u1",
     payload: "x",
   });
-  const { notification, deliveries } = await finished(t, required(id));
-  expect(mock).toHaveBeenCalledTimes(1);
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(1);
   expect(deliveries[0]).toMatchObject({
     status: "failed",
     errorKind: "bad_request",
@@ -257,8 +266,8 @@ test("a permanent error is not retried and records fixed error data", async () =
 
 test("a server error is retried with backoff until it succeeds", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(503), respond(502), respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respondInOrder(respond(503), respond(502), respond(201)));
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -266,18 +275,20 @@ test("a server error is retried with backoff until it succeeds", async () => {
     userId: "u1",
     payload: "x",
   });
-  const { notification, deliveries } = await finished(t, required(id));
-  expect(mock).toHaveBeenCalledTimes(3);
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(3);
   expect(deliveries[0]).toMatchObject({ status: "sent", attempts: 3 });
   expect(notification.status).toBe("delivered");
 });
 
 test("network errors are retried", async () => {
   await configureVapid();
-  const { mock } = stubFetch(() => {
-    throw new TypeError("connection reset");
-  }, respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(
+    respondInOrder(() => {
+      throw new TypeError("connection reset");
+    }, respond(201)),
+  );
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -285,15 +296,20 @@ test("network errors are retried", async () => {
     userId: "u1",
     payload: "x",
   });
-  const { deliveries } = await finished(t, required(id));
-  expect(mock).toHaveBeenCalledTimes(2);
+  const { deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(2);
   expect(deliveries[0]).toMatchObject({ status: "sent", attempts: 2 });
 });
 
 test("429 honours Retry-After", async () => {
   await configureVapid();
-  const { calls } = stubFetch(respond(429, { "Retry-After": "600" }), respond(201));
-  const t = setupTest({ testMode: false });
+  const requestedAt: number[] = [];
+  const respondNext = respondInOrder(respond(429, { "Retry-After": "600" }), respond(201));
+  stubFetch((call, index) => {
+    requestedAt.push(Date.now());
+    return respondNext(call, index);
+  });
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -301,15 +317,17 @@ test("429 honours Retry-After", async () => {
     userId: "u1",
     payload: "x",
   });
-  const { deliveries } = await finished(t, required(id));
+  const { deliveries } = await finished(t, required(id, "the notification id"));
   expect(deliveries[0]).toMatchObject({ status: "sent", attempts: 2 });
-  expect(required(calls[1]).time - required(calls[0]).time).toBeGreaterThanOrEqual(600_000);
+  expect(
+    required(requestedAt[1], "the retry") - required(requestedAt[0], "the first request"),
+  ).toBeGreaterThanOrEqual(600_000);
 });
 
 test("gives up after the maximum number of attempts", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(503));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(503));
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     urgency: "normal",
@@ -317,8 +335,8 @@ test("gives up after the maximum number of attempts", async () => {
     payload: "x",
     ttlSeconds: 86_400,
   });
-  const { notification, deliveries } = await finished(t, required(id));
-  expect(mock).toHaveBeenCalledTimes(5);
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(5);
   expect(deliveries[0]).toMatchObject({
     status: "failed",
     attempts: 5,
@@ -330,8 +348,8 @@ test("gives up after the maximum number of attempts", async () => {
 
 test("a long Retry-After beyond the TTL is not waited for", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(429, { "Retry-After": "7200" }));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(429, { "Retry-After": "7200" }));
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     urgency: "normal",
@@ -339,8 +357,8 @@ test("a long Retry-After beyond the TTL is not waited for", async () => {
     payload: "x",
     ttlSeconds: 3600,
   });
-  const { deliveries } = await finished(t, required(id));
-  expect(mock).toHaveBeenCalledTimes(1);
+  const { deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(1);
   expect(deliveries[0]).toMatchObject({
     status: "failed",
     errorKind: "ttl_expired",
@@ -351,10 +369,10 @@ test("a long Retry-After beyond the TTL is not waited for", async () => {
 test("fans out to every active subscription and reports partial results", async () => {
   await configureVapid();
   let n = 0;
-  const { mock } = stubFetch(
+  const calls = stubFetch(
     () => new Response(n++ === 0 ? null : "gone", { status: n === 1 ? 201 : 410 }),
   );
-  const t = setupTest({ testMode: false });
+  const t = setupLiveTest();
   await subscribe(t);
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
@@ -363,8 +381,8 @@ test("fans out to every active subscription and reports partial results", async 
     userId: "u1",
     payload: "x",
   });
-  const { notification, deliveries } = await finished(t, required(id));
-  expect(mock).toHaveBeenCalledTimes(2);
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(2);
   expect(deliveries).toHaveLength(2);
   expect(notification).toMatchObject({
     status: "delivered",
@@ -373,7 +391,7 @@ test("fans out to every active subscription and reports partial results", async 
 });
 
 test("returns null when the user has no active subscription, paused or otherwise", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   expect(
     await t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
@@ -405,8 +423,8 @@ test("returns null when the user has no active subscription, paused or otherwise
 
 test("idempotencyKey dedupes per user and sends once", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   await subscribe(t);
   await subscribe(t, "u2");
   const first = await t.mutation(api.notifications.send, {
@@ -433,13 +451,13 @@ test("idempotencyKey dedupes per user and sends once", async () => {
   expect(again).toBe(first);
   expect(other).not.toBe(first);
   await drain(t);
-  expect(mock).toHaveBeenCalledTimes(2);
+  expect(calls).toHaveLength(2);
   expect(await t.run((ctx) => ctx.db.query("notifications").take(10000))).toHaveLength(2);
 });
 
 test("idempotency keys separate live and test notifications and reject changed arguments", async () => {
   await configureVapid();
-  const t = setupTest({ testMode: false });
+  const t = setupLiveTest();
   const { subscription } = await makeSubscription();
   for (const testMode of [false, true]) {
     await t.mutation(api.subscriptions.record, { userId: "alice", subscription, testMode });
@@ -451,39 +469,46 @@ test("idempotency keys separate live and test notifications and reject changed a
     urgency: "normal" as const,
     idempotencyKey: "event",
   };
-  const liveId = required(await t.mutation(api.notifications.send, { ...args, testMode: false }));
-  const testId = required(await t.mutation(api.notifications.send, { ...args, testMode: true }));
+  const liveId = required(
+    await t.mutation(api.notifications.send, { ...args, testMode: false }),
+    "the live notification id",
+  );
+  const testId = required(
+    await t.mutation(api.notifications.send, { ...args, testMode: true }),
+    "the test notification id",
+  );
   expect(testId).not.toBe(liveId);
   expect(await t.mutation(api.notifications.send, { ...args, testMode: true })).toBe(testId);
-  await expect(
+  await expectWebPushError(
     t.mutation(api.notifications.send, { ...args, ttlSeconds: 61, testMode: true }),
-  ).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_IDEMPOTENCY_CONFLICT" },
-  });
+    "WEB_PUSH_IDEMPOTENCY_CONFLICT",
+  );
   const history = await t.query(api.notifications.list, {
     userId: "alice",
     testMode: true,
     paginationOpts: { numItems: 10, cursor: null },
   });
   expect(history.page.map((row) => row._id)).toEqual([testId]);
-  await expect(
+  await expectWebPushError(
     t.query(api.notifications.get, {
       userId: "alice",
       notificationId: liveId,
       testMode: true,
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_NOT_FOUND" } });
-  await expect(
+    "WEB_PUSH_NOT_FOUND",
+  );
+  await expectWebPushError(
     t.query(api.deliveries.list, {
       userId: "alice",
       notificationId: liveId,
       testMode: true,
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_NOT_FOUND" } });
+    "WEB_PUSH_NOT_FOUND",
+  );
 });
 
 test("sendBatch fans out per user and dedupes repeated user IDs", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   await subscribe(t, "a");
   await subscribe(t, "b");
   const { results, done } = await t.mutation(api.notifications.sendBatch, {
@@ -498,18 +523,19 @@ test("sendBatch fans out per user and dedupes repeated user IDs", async () => {
     ["b", true],
     ["c", false],
   ]);
-  await expect(
+  await expectWebPushError(
     t.mutation(api.notifications.sendBatch, {
       ttlSeconds: 86400,
       urgency: "normal",
       userIds: Array.from({ length: 101 }, (_, i) => `u${i}`),
       payload: "x",
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
 });
 
 test("rejects oversized payloads by UTF-8 byte length, and bad topics", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   await subscribe(t);
   await expect(
     t.mutation(api.notifications.send, {
@@ -519,23 +545,25 @@ test("rejects oversized payloads by UTF-8 byte length, and bad topics", async ()
       payload: "a".repeat(3993),
     }),
   ).resolves.not.toBeNull();
-  await expect(
+  await expectWebPushError(
     t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
       urgency: "normal",
       userId: "u1",
       payload: "a".repeat(3994),
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_PAYLOAD_TOO_LARGE" } });
-  await expect(
+    "WEB_PUSH_PAYLOAD_TOO_LARGE",
+  );
+  await expectWebPushError(
     t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
       urgency: "normal",
       userId: "u1",
       payload: "é".repeat(2000),
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_PAYLOAD_TOO_LARGE" } });
-  await expect(
+    "WEB_PUSH_PAYLOAD_TOO_LARGE",
+  );
+  await expectWebPushError(
     t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
       urgency: "normal",
@@ -543,8 +571,9 @@ test("rejects oversized payloads by UTF-8 byte length, and bad topics", async ()
       payload: "x",
       topic: "bad topic!",
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
-  await expect(
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+  await expectWebPushError(
     t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
       urgency: "normal",
@@ -552,23 +581,25 @@ test("rejects oversized payloads by UTF-8 byte length, and bad topics", async ()
       payload: "***",
       payloadEncoding: "base64url",
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
 });
 
-test("without opt-in, sending with no VAPID configuration throws and creates nothing", async () => {
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest();
+test("unset test mode means live, so sending without VAPID configuration throws and creates nothing", async () => {
+  const calls = stubFetch(respond(201));
+  const t = setupSimulatedTest();
   await subscribe(t);
   vi.stubEnv("WEB_PUSH_TEST_MODE", undefined);
-  await expect(
+  await expectWebPushError(
     t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
       urgency: "normal",
       userId: "u1",
       payload: "x",
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
-  await expect(
+    "WEB_PUSH_NOT_CONFIGURED",
+  );
+  await expectWebPushError(
     t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
       urgency: "normal",
@@ -576,8 +607,9 @@ test("without opt-in, sending with no VAPID configuration throws and creates not
       payload: "x",
       testMode: false,
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_NOT_CONFIGURED" } });
-  await expect(
+    "WEB_PUSH_NOT_CONFIGURED",
+  );
+  await expectWebPushError(
     t.mutation(api.notifications.sendBatch, {
       ttlSeconds: 86400,
       urgency: "normal",
@@ -585,16 +617,19 @@ test("without opt-in, sending with no VAPID configuration throws and creates not
       payload: "x",
       testMode: false,
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_NOT_CONFIGURED" } });
+    "WEB_PUSH_NOT_CONFIGURED",
+  );
   expect(await t.run((ctx) => ctx.db.query("notifications").take(10000))).toHaveLength(0);
-  expect(mock).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
 
-  expect(await t.query(api.subscriptions.readApplicationServerKey, { testMode: true })).toBeNull();
+  expect(await t.query(api.config.get, { testMode: true })).toEqual({
+    applicationServerKey: null,
+  });
 });
 
 test("invalid VAPID settings throw a configuration error that never echoes key material", async () => {
   const keys = await configureVapid();
-  const t = setupTest({ testMode: false });
+  const t = setupLiveTest();
   await subscribe(t);
   vi.stubEnv("WEB_PUSH_VAPID_SUBJECT", "localhost");
   const error = await t
@@ -612,7 +647,7 @@ test("invalid VAPID settings throw a configuration error that never echoes key m
   expect(String(error)).toContain("WEB_PUSH_NOT_CONFIGURED");
   expect(String(error)).toContain("Component configuration is missing");
   expect(String(error)).not.toContain(keys.privateKey);
-  vi.stubEnv("WEB_PUSH_VAPID_SUBJECT", "mailto:ops@example.com");
+  vi.stubEnv("WEB_PUSH_VAPID_SUBJECT", "mailto:ops@acme.dev");
   vi.stubEnv("WEB_PUSH_VAPID_PRIVATE_KEY", "not-a-key!");
   const bad = await t
     .mutation(api.notifications.send, {
@@ -630,8 +665,8 @@ test("invalid VAPID settings throw a configuration error that never echoes key m
 });
 
 test("test mode opts in through the WEB_PUSH_TEST_MODE env and tags rows", async () => {
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest();
+  const calls = stubFetch(respond(201));
+  const t = setupSimulatedTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -639,15 +674,15 @@ test("test mode opts in through the WEB_PUSH_TEST_MODE env and tags rows", async
     userId: "u1",
     payload: "x",
   });
-  const { notification, deliveries } = await finished(t, required(id));
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
   expect(notification).toMatchObject({ status: "delivered", testMode: true });
   expect(deliveries[0]).toMatchObject({ status: "sent", testMode: true });
-  expect(mock).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
 });
 
 test("test mode opts in through the testMode argument without any env", async () => {
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest();
+  const calls = stubFetch(respond(201));
+  const t = setupSimulatedTest();
   await subscribe(t);
   vi.stubEnv("WEB_PUSH_TEST_MODE", undefined);
   const id = await t.mutation(api.notifications.send, {
@@ -657,16 +692,16 @@ test("test mode opts in through the testMode argument without any env", async ()
     payload: "x",
     testMode: true,
   });
-  const { notification, deliveries } = await finished(t, required(id));
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
   expect(notification.testMode).toBe(true);
   expect(deliveries[0]?.testMode).toBe(true);
-  expect(mock).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
 });
 
 test("real sends are not tagged as test mode", async () => {
   await configureVapid();
   stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -674,15 +709,15 @@ test("real sends are not tagged as test mode", async () => {
     userId: "u1",
     payload: "x",
   });
-  const { notification, deliveries } = await finished(t, required(id));
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
   expect(notification.testMode).toBe(false);
   expect(deliveries[0]?.testMode).toBe(false);
 });
 
 test("a rotated VAPID key marks old subscriptions gone instead of retrying forever", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   await subscribe(t);
   await configureVapid();
   const id = await t.mutation(api.notifications.send, {
@@ -691,15 +726,15 @@ test("a rotated VAPID key marks old subscriptions gone instead of retrying forev
     userId: "u1",
     payload: "x",
   });
-  const { deliveries } = await finished(t, required(id));
+  const { deliveries } = await finished(t, required(id, "the notification id"));
   expect(deliveries[0]).toMatchObject({ status: "gone", errorKind: "vapid_key_mismatch" });
-  expect(mock).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
 });
 
 test("the delivery-time SSRF guard applies even if a subscription slipped in earlier", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   const sub = await makeSubscription("push.example.test");
   await t.mutation(api.subscriptions.record, {
     userId: "u1",
@@ -712,11 +747,13 @@ test("the delivery-time SSRF guard applies even if a subscription slipped in ear
     userId: "u1",
     payload: "x",
   });
-  expect((await finished(t, required(blocked))).deliveries[0]).toMatchObject({
+  expect(
+    (await finished(t, required(blocked, "the blocked notification id"))).deliveries[0],
+  ).toMatchObject({
     status: "failed",
     errorKind: "endpoint_not_allowed",
   });
-  expect(mock).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
 
   const allowed = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -725,12 +762,16 @@ test("the delivery-time SSRF guard applies even if a subscription slipped in ear
     payload: "x",
     allowedPushHosts: ["push.example.test"],
   });
-  expect((await finished(t, required(allowed))).deliveries[0]).toMatchObject({ status: "sent" });
-  expect(mock).toHaveBeenCalledTimes(1);
+  expect(
+    (await finished(t, required(allowed, "the allowed notification id"))).deliveries[0],
+  ).toMatchObject({
+    status: "sent",
+  });
+  expect(calls).toHaveLength(1);
 });
 
 test("subscriptions past their expirationTime are pruned instead of sent to", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const sub = await makeSubscription();
   await t.mutation(api.subscriptions.record, {
     userId: "u1",
@@ -752,7 +793,7 @@ test("subscriptions past their expirationTime are pruned instead of sent to", as
 test("a subscription removed mid-flight ends the delivery without error", async () => {
   await configureVapid();
   stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const t = setupLiveTest();
   const sub = await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -761,13 +802,13 @@ test("a subscription removed mid-flight ends the delivery without error", async 
     payload: "x",
   });
   await t.mutation(api.subscriptions.remove, { endpoint: sub.subscription.endpoint, userId: "u1" });
-  const { notification, deliveries } = await finished(t, required(id));
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
   expect(deliveries[0]).toMatchObject({ status: "gone", errorKind: "subscription_removed" });
   expect(notification.counts.gone).toBe(1);
 });
 
 test("notification history is paginated newest first", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   await subscribe(t);
   for (const n of [1, 2, 3]) {
     vi.setSystemTime(Date.now() + 1000);
@@ -793,8 +834,8 @@ test("notification history is paginated newest first", async () => {
 
 test("a subscription reassigned before delivery never receives the old user's payload", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   const alice = await subscribe(t, "alice");
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -804,9 +845,9 @@ test("a subscription reassigned before delivery never receives the old user's pa
   });
   await t.mutation(api.subscriptions.record, { userId: "bob", subscription: alice.subscription });
   await drain(t);
-  expect(mock).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
   const deliveries = await t.query(api.deliveries.list, {
-    notificationId: required(id),
+    notificationId: required(id, "the notification id"),
     userId: "alice",
   });
   expect(deliveries[0]).toMatchObject({ status: "failed", errorKind: "reassigned" });
@@ -816,7 +857,7 @@ test("a subscription reassigned before delivery never receives the old user's pa
 });
 
 test("a large batch continues in scheduled mutations within a delivery budget", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const users = ["u1", "u2", "u3", "u4"];
   await subscribeBatch(t, users, [50, 50, 50, 1]);
   const first = await t.mutation(api.notifications.sendBatch, {
@@ -849,8 +890,8 @@ test("a large batch continues in scheduled mutations within a delivery budget", 
 
 test("the remaining TTL is sent on every attempt", async () => {
   await configureVapid();
-  const fetched = stubFetch(respond(503), respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respondInOrder(respond(503), respond(201)));
+  const t = setupLiveTest();
   await subscribe(t, "u1");
   const id = await t.mutation(api.notifications.send, {
     urgency: "normal",
@@ -858,10 +899,10 @@ test("the remaining TTL is sent on every attempt", async () => {
     payload: "x",
     ttlSeconds: 100_000,
   });
-  const { notification } = await finished(t, required(id));
-  expect(fetched.calls).toHaveLength(2);
-  const first = Number(fetched.headers(0).get("TTL"));
-  const second = Number(fetched.headers(1).get("TTL"));
+  const { notification } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(2);
+  const first = Number(requestHeaders(calls, 0).get("TTL"));
+  const second = Number(requestHeaders(calls, 1).get("TTL"));
   expect(first).toBeLessThanOrEqual(100_000);
   expect(second).toBeLessThan(first);
   expect(second).toBeGreaterThan(0);
@@ -870,8 +911,8 @@ test("the remaining TTL is sent on every attempt", async () => {
 
 test("TTL 0 is sent once with TTL 0 and never retried", async () => {
   await configureVapid();
-  const fetched = stubFetch(respond(503));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(503));
+  const t = setupLiveTest();
   await subscribe(t, "u1");
   const id = await t.mutation(api.notifications.send, {
     urgency: "normal",
@@ -879,15 +920,15 @@ test("TTL 0 is sent once with TTL 0 and never retried", async () => {
     payload: "x",
     ttlSeconds: 0,
   });
-  const { deliveries } = await finished(t, required(id));
-  expect(fetched.calls.map((_, n) => fetched.headers(n).get("TTL"))).toEqual(["0"]);
+  const { deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls.map((_, n) => requestHeaders(calls, n).get("TTL"))).toEqual(["0"]);
   expect(deliveries[0]).toMatchObject({ status: "failed", errorKind: "ttl_expired", attempts: 1 });
 });
 
 test("a message already expired before its first attempt is not sent", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   await subscribe(t, "u1");
   const id = await t.mutation(api.notifications.send, {
     urgency: "normal",
@@ -896,15 +937,20 @@ test("a message already expired before its first attempt is not sent", async () 
     ttlSeconds: 60,
   });
   vi.setSystemTime(Date.now() + 120_000);
-  const { deliveries } = await finished(t, required(id));
-  expect(mock).not.toHaveBeenCalled();
+  const { deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(0);
   expect(deliveries[0]).toMatchObject({ status: "failed", errorKind: "ttl_expired" });
 });
 
 test("a Retry-After longer than a day is honoured when the TTL allows it", async () => {
   await configureVapid();
-  const { calls } = stubFetch(respond(429, { "Retry-After": "172800" }), respond(201));
-  const t = setupTest({ testMode: false });
+  const requestedAt: number[] = [];
+  const respondNext = respondInOrder(respond(429, { "Retry-After": "172800" }), respond(201));
+  stubFetch((call, index) => {
+    requestedAt.push(Date.now());
+    return respondNext(call, index);
+  });
+  const t = setupLiveTest();
   await subscribe(t, "u1");
   await t.mutation(api.notifications.send, {
     urgency: "normal",
@@ -913,12 +959,14 @@ test("a Retry-After longer than a day is honoured when the TTL allows it", async
     ttlSeconds: 2_000_000,
   });
   await drain(t);
-  expect(calls).toHaveLength(2);
-  expect(required(calls[1]).time - required(calls[0]).time).toBeGreaterThanOrEqual(172_800_000);
+  expect(requestedAt).toHaveLength(2);
+  expect(
+    required(requestedAt[1], "the retry") - required(requestedAt[0], "the first request"),
+  ).toBeGreaterThanOrEqual(172_800_000);
 });
 
 test("begin computes the remaining TTL in whole seconds", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   await subscribe(t, "u1");
   const id = await t.mutation(api.notifications.send, {
     urgency: "normal",
@@ -927,18 +975,18 @@ test("begin computes the remaining TTL in whole seconds", async () => {
     ttlSeconds: 600,
   });
   const [delivery] = await t.query(api.deliveries.list, {
-    notificationId: required(id),
+    notificationId: required(id, "the notification id"),
     userId: "u1",
   });
   vi.setSystemTime(Date.now() + 100_500);
   const job = await t.mutation(internal.deliveries.begin, {
-    deliveryId: required(delivery)._id,
+    deliveryId: required(delivery, "the delivery")._id,
   });
   expect(job).toMatchObject({ ok: true, ttlSeconds: 499 });
 });
 
 test("an invalid WEB_PUSH_MAX_PARALLELISM is a configuration error, even in test mode", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   await subscribe(t);
   vi.stubEnv("WEB_PUSH_MAX_PARALLELISM", "0");
   await expectWebPushError(
@@ -957,13 +1005,15 @@ test("an invalid WEB_PUSH_MAX_PARALLELISM is a configuration error, even in test
     userId: "u1",
     payload: "x",
   });
-  expect((await finished(t, required(id))).notification.status).toBe("delivered");
+  expect((await finished(t, required(id, "the notification id"))).notification.status).toBe(
+    "delivered",
+  );
 });
 
 test("malformed parallelism after enqueueing prevents a push request", async () => {
   await configureVapid();
-  stubFetch(respond(503), respond(201));
-  const t = setupTest({ testMode: false });
+  stubFetch(respondInOrder(respond(503), respond(201)));
+  const t = setupLiveTest();
   await subscribe(t);
   vi.stubEnv("WEB_PUSH_MAX_PARALLELISM", "5");
   const id = await t.mutation(api.notifications.send, {
@@ -973,7 +1023,7 @@ test("malformed parallelism after enqueueing prevents a push request", async () 
     payload: "x",
   });
   vi.stubEnv("WEB_PUSH_MAX_PARALLELISM", "nope");
-  const { deliveries } = await finished(t, required(id));
+  const { deliveries } = await finished(t, required(id, "the notification id"));
   expect(deliveries[0]).toMatchObject({
     status: "failed",
     attempts: 1,
@@ -988,8 +1038,8 @@ test.each([
   "a subscription that is %s by delivery time is not sent to",
   async (state, kind, status) => {
     await configureVapid();
-    const { mock } = stubFetch(respond(201));
-    const t = setupTest({ testMode: false });
+    const calls = stubFetch(respond(201));
+    const t = setupLiveTest();
     await subscribe(t);
     const id = await t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
@@ -998,19 +1048,19 @@ test.each([
       payload: "x",
     });
     await t.run(async (ctx) => {
-      const row = required(await ctx.db.query("subscriptions").first());
+      const row = required(await ctx.db.query("subscriptions").first(), "a subscription row");
       await ctx.db.patch("subscriptions", row._id, { status: state });
     });
-    const { deliveries } = await finished(t, required(id));
-    expect(mock).not.toHaveBeenCalled();
+    const { deliveries } = await finished(t, required(id, "the notification id"));
+    expect(calls).toHaveLength(0);
     expect(deliveries[0]).toMatchObject({ status, errorKind: kind });
   },
 );
 
 test("a subscription that expires before delivery is marked gone", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   const sub = await makeSubscription();
   await t.mutation(api.subscriptions.record, {
     userId: "u1",
@@ -1023,13 +1073,13 @@ test("a subscription that expires before delivery is marked gone", async () => {
     payload: "x",
   });
   vi.setSystemTime(Date.now() + 120_000);
-  const { deliveries } = await finished(t, required(id));
-  expect(mock).not.toHaveBeenCalled();
+  const { deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(0);
   expect(deliveries[0]).toMatchObject({ status: "gone", errorKind: "subscription_expired" });
 });
 
 test("a delivery whose notification was deleted ends without sending", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   await subscribe(t);
   const id = required(
     await t.mutation(api.notifications.send, {
@@ -1038,6 +1088,7 @@ test("a delivery whose notification was deleted ends without sending", async () 
       userId: "u1",
       payload: "x",
     }),
+    "the notification id",
   );
   await t.run((ctx) => ctx.db.delete("notifications", id));
   await drain(t);
@@ -1046,7 +1097,7 @@ test("a delivery whose notification was deleted ends without sending", async () 
 });
 
 test("begin skips a delivery that already finished", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -1054,9 +1105,9 @@ test("begin skips a delivery that already finished", async () => {
     userId: "u1",
     payload: "x",
   });
-  const { deliveries } = await finished(t, required(id));
+  const { deliveries } = await finished(t, required(id, "the notification id"));
   const job = await t.mutation(internal.deliveries.begin, {
-    deliveryId: required(deliveries[0])._id,
+    deliveryId: required(deliveries[0], "the delivery")._id,
   });
   expect(job).toMatchObject({ ok: false, outcome: { errorKind: "delivery_closed" } });
 });
@@ -1077,13 +1128,14 @@ async function queuedDelivery(t: TestCtx) {
       userId: "u1",
       payload: "x",
     }),
+    "the notification id",
   );
   const rows = await t.run((ctx) => ctx.db.query("deliveries").take(10000));
-  return { id, deliveryId: required(rows[0])._id };
+  return { id, deliveryId: required(rows[0], "the delivery")._id };
 }
 
 test("a failed workpool result is retried, a canceled one is not, a garbled one is retried", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { id, deliveryId } = await queuedDelivery(t);
   const complete = (result: WorkResult) =>
     t.mutation(internal.deliveries.onComplete, {
@@ -1109,7 +1161,7 @@ test("a failed workpool result is retried, a canceled one is not, a garbled one 
 });
 
 test("a delivery finished twice is only counted once", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { id, deliveryId } = await queuedDelivery(t);
   const done = {
     workId,
@@ -1127,8 +1179,8 @@ test("a delivery finished twice is only counted once", async () => {
 
 test("VAPID settings that disappear after queueing fail the delivery without sending", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -1137,8 +1189,8 @@ test("VAPID settings that disappear after queueing fail the delivery without sen
     payload: "x",
   });
   vi.stubEnv("WEB_PUSH_VAPID_PRIVATE_KEY", undefined);
-  const { deliveries } = await finished(t, required(id));
-  expect(mock).not.toHaveBeenCalled();
+  const { deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(0);
   expect(deliveries[0]).toMatchObject({
     status: "failed",
     errorKind: "vapid_not_configured",
@@ -1151,8 +1203,8 @@ test("VAPID settings that disappear after queueing fail the delivery without sen
 
 test("a malformed public key after queueing fails without sending or exposing keys", async () => {
   const keys = await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   await subscribe(t);
   const id = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -1163,8 +1215,8 @@ test("a malformed public key after queueing fails without sending or exposing ke
 
   const offCurve = base64urlEncode(new Uint8Array([4, ...new Uint8Array(64).fill(1)]));
   vi.stubEnv("WEB_PUSH_VAPID_PUBLIC_KEY", offCurve);
-  const { deliveries } = await finished(t, required(id));
-  expect(mock).not.toHaveBeenCalled();
+  const { deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls).toHaveLength(0);
   expect(deliveries[0]).toMatchObject({
     status: "failed",
     errorKind: "vapid_not_configured",
@@ -1174,7 +1226,7 @@ test("a malformed public key after queueing fails without sending or exposing ke
 });
 
 test("a batch never puts more than 150 deliveries in one transaction", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const counts = [49, 50, 50, 2];
   const users = counts.map((_, i) => `cap${i}`);
   await subscribeBatch(t, users, counts);
@@ -1199,7 +1251,7 @@ test("a batch never puts more than 150 deliveries in one transaction", async () 
 });
 
 test("a batch that exactly fills the budget finishes in one call", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const users = ["a", "b", "c"];
   await subscribeBatch(t, users, [50, 50, 50]);
   const first = await t.mutation(api.notifications.sendBatch, {
@@ -1214,7 +1266,7 @@ test("a batch that exactly fills the budget finishes in one call", async () => {
 });
 
 test("a user with the maximum 50 subscriptions always fits an empty budget", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   await subscribeBatch(t, ["big"], [50]);
   const first = await t.mutation(api.notifications.sendBatch, {
     ttlSeconds: 86400,
@@ -1228,8 +1280,8 @@ test("a user with the maximum 50 subscriptions always fits an empty budget", asy
 
 test("a failed notification releases its idempotency key so a retry sends", async () => {
   await configureVapid();
-  const fetched = stubFetch(respond(410), respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respondInOrder(respond(410), respond(201)));
+  const t = setupLiveTest();
   await subscribe(t);
   const first = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -1238,7 +1290,7 @@ test("a failed notification releases its idempotency key so a retry sends", asyn
     payload: "x",
     idempotencyKey: "order-1",
   });
-  const failed = await finished(t, required(first));
+  const failed = await finished(t, required(first, "the first notification id"));
   expect(failed.notification.status).toBe("failed");
   expect(failed.notification.idempotencyKey).toBeUndefined();
 
@@ -1252,8 +1304,10 @@ test("a failed notification releases its idempotency key so a retry sends", asyn
   });
   expect(retry).not.toBeNull();
   expect(retry).not.toBe(first);
-  expect((await finished(t, required(retry))).notification.status).toBe("delivered");
-  expect(fetched.mock).toHaveBeenCalledTimes(2);
+  expect(
+    (await finished(t, required(retry, "the retried notification id"))).notification.status,
+  ).toBe("delivered");
+  expect(calls).toHaveLength(2);
 
   const again = await t.mutation(api.notifications.send, {
     ttlSeconds: 86400,
@@ -1278,8 +1332,8 @@ const batchAcrossDeliveryBudget = async (t: TestCtx) => {
 
 test("a test-mode batch stays in test mode when the env changes mid-batch", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest();
+  const calls = stubFetch(respond(201));
+  const t = setupSimulatedTest();
   const first = await batchAcrossDeliveryBudget(t);
   expect(first.done).toBe(false);
   expect(first.results).toHaveLength(3);
@@ -1295,12 +1349,18 @@ test("a test-mode batch stays in test mode when the env changes mid-batch", asyn
   const initialDelivery = await deliveryForUser(t, "m0");
   const lastDelivery = await deliveryForUser(t, "m3");
   expect(
-    await t.action(internal.deliver.run, { deliveryId: required(initialDelivery)._id }),
+    await t.action(internal.deliver.run, {
+      deliveryId: required(initialDelivery, "the initial delivery")._id,
+    }),
   ).toEqual({ kind: "sent" });
-  expect(await t.action(internal.deliver.run, { deliveryId: required(lastDelivery)._id })).toEqual({
+  expect(
+    await t.action(internal.deliver.run, {
+      deliveryId: required(lastDelivery, "the last delivery")._id,
+    }),
+  ).toEqual({
     kind: "sent",
   });
-  expect(mock).not.toHaveBeenCalled();
+  expect(calls).toHaveLength(0);
   const rows = await t.run((ctx) => ctx.db.query("notifications").take(10000));
   expect(rows).toHaveLength(4);
   expect(rows.every((n) => n.testMode)).toBe(true);
@@ -1317,8 +1377,8 @@ test("a test-mode batch stays in test mode when the env changes mid-batch", asyn
 
 test("a real batch stays real when test mode is switched on mid-batch", async () => {
   await configureVapid();
-  const { mock } = stubFetch(respond(201));
-  const t = setupTest({ testMode: false });
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
   const first = await batchAcrossDeliveryBudget(t);
   expect(first.done).toBe(false);
   expect(first.results).toHaveLength(3);
@@ -1334,9 +1394,15 @@ test("a real batch stays real when test mode is switched on mid-batch", async ()
   const initialDelivery = await deliveryForUser(t, "m0");
   const lastDelivery = await deliveryForUser(t, "m3");
   expect(
-    await t.action(internal.deliver.run, { deliveryId: required(initialDelivery)._id }),
+    await t.action(internal.deliver.run, {
+      deliveryId: required(initialDelivery, "the initial delivery")._id,
+    }),
   ).toEqual({ kind: "sent", providerStatus: 201, attempted: true });
-  expect(await t.action(internal.deliver.run, { deliveryId: required(lastDelivery)._id })).toEqual({
+  expect(
+    await t.action(internal.deliver.run, {
+      deliveryId: required(lastDelivery, "the last delivery")._id,
+    }),
+  ).toEqual({
     kind: "sent",
     providerStatus: 201,
     attempted: true,
@@ -1344,13 +1410,14 @@ test("a real batch stays real when test mode is switched on mid-batch", async ()
   const rows = await t.run((ctx) => ctx.db.query("notifications").take(10000));
   expect(rows).toHaveLength(4);
   expect(rows.every((n) => !n.testMode)).toBe(true);
-  expect(mock).toHaveBeenCalledTimes(2);
+  expect(calls).toHaveLength(2);
   const deliveries = await t.run((ctx) => ctx.db.query("deliveries").take(10000));
   expect(deliveries).toHaveLength(151);
   expect(deliveries.every((d) => !d.testMode)).toBe(true);
-  await expect(
+  await expectWebPushError(
     t.query(api.notifications.getBatch, { batchId: first.batchId, testMode: false }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_NOT_FOUND" } });
+    "WEB_PUSH_NOT_FOUND",
+  );
   expect(await t.run((ctx) => ctx.db.get("batches", first.batchId))).toMatchObject({
     status: "done",
     nextIndex: 4,
@@ -1358,33 +1425,35 @@ test("a real batch stays real when test mode is switched on mid-batch", async ()
 });
 
 test.each(["endpoint", "key", "userId"])("registration bounds %s before storage", async (field) => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   if (field === "endpoint") subscription.endpoint += "a".repeat(10000);
   if (field === "key") subscription.keys.auth += "=".repeat(10000);
-  await expect(
+  await expectWebPushError(
     t.mutation(api.subscriptions.record, {
       userId: field === "userId" ? "u".repeat(20000) : "u",
       subscription,
     }),
-  ).rejects.toMatchObject({ data: { code: expect.stringMatching(/^WEB_PUSH_/) } });
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
 });
 
 test("batch bounds the supplied array before deduplication", async () => {
-  const t = setupTest();
-  await expect(
+  const t = setupSimulatedTest();
+  await expectWebPushError(
     t.mutation(api.notifications.sendBatch, {
       ttlSeconds: 86400,
       urgency: "normal",
       userIds: Array(101).fill("u"),
       payload: "x",
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
 });
 
 test("raw base64 payload rejects excessive padding before decoding", async () => {
-  const t = setupTest();
-  await expect(
+  const t = setupSimulatedTest();
+  await expectWebPushError(
     t.mutation(api.notifications.send, {
       ttlSeconds: 86400,
       urgency: "normal",
@@ -1392,36 +1461,37 @@ test("raw base64 payload rejects excessive padding before decoding", async () =>
       payload: "eA" + "=".repeat(10000),
       payloadEncoding: "base64url",
     }),
-  ).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_PAYLOAD_TOO_LARGE", message: expect.stringContaining("5324") },
-  });
+    "WEB_PUSH_PAYLOAD_TOO_LARGE",
+  );
 });
 
 test.each(["not-json", "{}", "123", "[{}]", '["u",0,0,"\\ud800"]'])(
   "history rejects malformed cursor %j with a package error",
   async (cursor) => {
-    const t = setupTest();
-    await expect(
+    const t = setupSimulatedTest();
+    await expectWebPushError(
       t.query(api.notifications.list, {
         userId: "u",
         paginationOpts: { numItems: 1, cursor },
       }),
-    ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
+      "WEB_PUSH_INVALID_ARGUMENT",
+    );
   },
 );
 
 test.each([0, 101, 1.5])("history rejects page size %s", async (numItems) => {
-  const t = setupTest();
-  await expect(
+  const t = setupSimulatedTest();
+  await expectWebPushError(
     t.query(api.notifications.list, {
       userId: "u",
       paginationOpts: { numItems, cursor: null },
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
 });
 
 test("endCursor cannot remove the server row budget", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   await t.mutation(api.subscriptions.record, { userId: "u", subscription });
   for (let i = 0; i < 8; i++)
@@ -1448,7 +1518,7 @@ test("endCursor cannot remove the server row budget", async () => {
 });
 
 test("expired subscription pruning consumes the batch budget", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   const users = ["a", "b", "c", "d"];
   for (const userId of users)
@@ -1473,7 +1543,7 @@ test("expired subscription pruning consumes the batch budget", async () => {
 
 test("batch continuation revalidates configuration", async () => {
   await configureVapid();
-  const t = setupTest({ testMode: false });
+  const t = setupLiveTest();
   const { subscription } = await makeSubscription();
   const users = ["a", "b", "c", "d"];
   for (const userId of users)
@@ -1497,7 +1567,7 @@ test("batch continuation revalidates configuration", async () => {
 });
 
 test("different oversized payloads return the same fixed message", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const data = [];
   for (const size of [3994, 3995]) {
     try {
@@ -1520,7 +1590,7 @@ test.each(["configuration", "fingerprint"])(
   "batch continuation records terminal failure after %s changes",
   async (change) => {
     await configureVapid();
-    const t = setupTest({ testMode: false });
+    const t = setupLiveTest();
     const batchId = await t.run((ctx) =>
       ctx.db.insert("batches", {
         testMode: false,
@@ -1549,7 +1619,7 @@ test.each(["configuration", "fingerprint"])(
 );
 
 test("notification and delivery reads reject another owner", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   await t.mutation(api.subscriptions.record, { userId: "alice", subscription });
   const notificationId = required(
@@ -1559,13 +1629,16 @@ test("notification and delivery reads reject another owner", async () => {
       userId: "alice",
       payload: "private",
     }),
+    "the notification id",
   );
-  await expect(
+  await expectWebPushError(
     t.query(api.notifications.get, { notificationId, userId: "bob" }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_NOT_FOUND" } });
-  await expect(
+    "WEB_PUSH_NOT_FOUND",
+  );
+  await expectWebPushError(
     t.query(api.deliveries.list, { notificationId, userId: "bob" }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_NOT_FOUND" } });
+    "WEB_PUSH_NOT_FOUND",
+  );
   expect(await t.query(api.notifications.get, { notificationId, userId: "alice" })).toMatchObject({
     payload: "private",
   });
@@ -1575,7 +1648,7 @@ test("notification and delivery reads reject another owner", async () => {
 test.each(["subscription_paused", "ttl_expired", "subscription_expired"])(
   "unsent %s preserves subscription failure health",
   async (reason) => {
-    const t = setupTest();
+    const t = setupSimulatedTest();
     const { subscription } = await makeSubscription();
     const saved = await t.mutation(api.subscriptions.record, { userId: "alice", subscription });
     const notificationId = required(
@@ -1585,6 +1658,7 @@ test.each(["subscription_paused", "ttl_expired", "subscription_expired"])(
         payload: "x",
         ttlSeconds: 60,
       }),
+      "the notification id",
     );
     const delivery = required(
       await t.run((ctx) =>
@@ -1593,6 +1667,7 @@ test.each(["subscription_paused", "ttl_expired", "subscription_expired"])(
           .withIndex("by_notificationId", (q) => q.eq("notificationId", notificationId))
           .first(),
       ),
+      "the delivery",
     );
     await t.run(async (ctx) => {
       await ctx.db.patch("subscriptions", saved.subscriptionId, {
@@ -1621,3 +1696,121 @@ test.each(["subscription_paused", "ttl_expired", "subscription_expired"])(
     });
   },
 );
+
+test.each([-1, 1.5, 3e6])(
+  "TTL %d is rejected before any row is read, even for a user without subscriptions",
+  async (ttlSeconds) => {
+    const t = setupSimulatedTest();
+    await expectWebPushError(
+      t.mutation(api.notifications.send, {
+        ttlSeconds,
+        urgency: "normal",
+        userId: "nobody",
+        payload: "x",
+      }),
+      "WEB_PUSH_INVALID_ARGUMENT",
+    );
+    await expectWebPushError(
+      t.mutation(api.notifications.sendBatch, {
+        ttlSeconds,
+        urgency: "normal",
+        userIds: ["nobody"],
+        payload: "x",
+      }),
+      "WEB_PUSH_INVALID_ARGUMENT",
+    );
+    expect(await t.run((ctx) => ctx.db.query("batches").take(10))).toHaveLength(0);
+  },
+);
+
+test("a completion callback that is not a function handle is rejected at send", async () => {
+  const t = setupSimulatedTest();
+  await expectWebPushError(
+    t.mutation(api.notifications.send, {
+      ttlSeconds: 86400,
+      urgency: "normal",
+      userId: "u1",
+      payload: "x",
+      onComplete: "results:onNotificationComplete",
+    }),
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+});
+
+test("a batch continuation that hits an idempotency conflict fails with progress saved and reports it", async () => {
+  const t = setupSimulatedTest();
+  const users = ["a", "b", "c", "d"];
+  await subscribeBatch(t, users, [50, 50, 50, 1]);
+  const first = await t.mutation(api.notifications.sendBatch, {
+    ttlSeconds: 86400,
+    urgency: "normal",
+    userIds: users,
+    payload: "digest",
+    idempotencyKey: "digest-1",
+    onComplete: "function://;results:onBatchComplete",
+  });
+  expect(first).toMatchObject({ done: false });
+  expect(first.results).toHaveLength(3);
+  await t.mutation(api.notifications.send, {
+    ttlSeconds: 86400,
+    urgency: "normal",
+    userId: "d",
+    payload: "other digest",
+    idempotencyKey: "digest-1",
+  });
+
+  await t.mutation(internal.notifications.continueBatch, { batchId: first.batchId });
+
+  const batch = await t.query(api.notifications.getBatch, { batchId: first.batchId });
+  expect(batch).toMatchObject({
+    status: "failed",
+    errorCode: "WEB_PUSH_IDEMPOTENCY_CONFLICT",
+    total: 4,
+    processed: 3,
+  });
+  expect(batch.notificationIds).toHaveLength(3);
+  const callbacks = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").take(1000));
+  expect(callbacks.filter((job) => job.name.endsWith("invokeCallback"))).toEqual([
+    expect.objectContaining({
+      args: [
+        {
+          handle: "function://;results:onBatchComplete",
+          result: {
+            batchId: first.batchId,
+            testMode: true,
+            status: "failed",
+            total: 4,
+            processed: 3,
+            notificationIds: batch.notificationIds,
+            errorCode: "WEB_PUSH_IDEMPOTENCY_CONFLICT",
+          },
+        },
+      ],
+    }),
+  ]);
+});
+
+test("a sendBatch whose first step hits an idempotency conflict throws and stores no batch", async () => {
+  const t = setupSimulatedTest();
+  await subscribe(t, "a");
+  await subscribe(t, "b");
+  await t.mutation(api.notifications.send, {
+    ttlSeconds: 86400,
+    urgency: "normal",
+    userId: "b",
+    payload: "earlier digest",
+    idempotencyKey: "digest-1",
+  });
+  await expectWebPushError(
+    t.mutation(api.notifications.sendBatch, {
+      ttlSeconds: 86400,
+      urgency: "normal",
+      userIds: ["a", "b"],
+      payload: "digest",
+      idempotencyKey: "digest-1",
+    }),
+    "WEB_PUSH_IDEMPOTENCY_CONFLICT",
+  );
+  expect(await t.run((ctx) => ctx.db.query("batches").take(10))).toHaveLength(0);
+  expect(await t.run((ctx) => ctx.db.query("notifications").take(10))).toHaveLength(1);
+});

@@ -168,7 +168,7 @@ importers:
     dependencies:
       '@convex-dev/workpool':
         specifier: ^0.4.13
-        version: 0.4.13(convex-helpers@0.1.127(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)
+        version: 0.4.13(convex-helpers@0.1.128(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)
     devDependencies:
       '@changesets/cli':
         specifier: 3.0.3
@@ -189,11 +189,11 @@ importers:
         specifier: 1.46.0
         version: 1.46.0(react@19.3.0)
       convex-helpers:
-        specifier: 0.1.127
-        version: 0.1.127(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
+        specifier: 0.1.128
+        version: 0.1.128(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
       convex-test:
-        specifier: 0.0.60
-        version: 0.0.60(convex@1.46.0(react@19.3.0))
+        specifier: 0.0.61
+        version: 0.0.61(convex@1.46.0(react@19.3.0))
       knip:
         specifier: 6.40.0
         version: 6.40.0
@@ -1449,8 +1449,8 @@ packages:
     resolution: {integrity: sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg==}
     engines: {node: '>=18'}
 
-  convex-helpers@0.1.127:
-    resolution: {integrity: sha512-WG8QVcpFeyRhACjif0kvqXRp8Xhp9N+NL1PLffx9pkSUJfXE3MEve13npznjNkNnJE9GhqwPnBCSs2fhO9/3Sw==}
+  convex-helpers@0.1.128:
+    resolution: {integrity: sha512-5n7uKsJrYnnybvuSAWgDQ9d5Avqk4CzFsJ22SXow4tHmVxSUH6qiJCeomWWxcLSfN9t9jpKIXNJiGJrjddS4ng==}
     hasBin: true
     peerDependencies:
       '@standard-schema/spec': ^1.0.0
@@ -1471,8 +1471,8 @@ packages:
       zod:
         optional: true
 
-  convex-test@0.0.60:
-    resolution: {integrity: sha512-qCAFx+CO6bmpXNc9s1jZvw8NJPS4yM074ib87PUY675FsiaRRW4ALotEB+RbVCYDRMYxh623KMnYZBlrMJIv1Q==}
+  convex-test@0.0.61:
+    resolution: {integrity: sha512-uYKCFk9+iu8jJB7TW3BHm3EAM6yPoXERoLHGiomhgUwuTLdSUjOk9SYnnnDc1UA1MQrMPYfUFSp+0+GWyFREng==}
     peerDependencies:
       convex: ^1.43.0
 
@@ -2284,11 +2284,11 @@ snapshots:
       - supports-color
       - typescript
 
-  '@convex-dev/workpool@0.4.13(convex-helpers@0.1.127(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)':
+  '@convex-dev/workpool@0.4.13(convex-helpers@0.1.128(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)':
     dependencies:
       '@convex-dev/batch-worker': 0.2.2(convex@1.46.0(react@19.3.0))(react@19.3.0)
       convex: 1.46.0(react@19.3.0)
-      convex-helpers: 0.1.127(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
+      convex-helpers: 0.1.128(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5)
     transitivePeerDependencies:
       - react
 
@@ -2981,7 +2981,7 @@ snapshots:
 
   chai@6.3.0: {}
 
-  convex-helpers@0.1.127(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5):
+  convex-helpers@0.1.128(@typescript/typescript6@6.0.2)(convex@1.46.0(react@19.3.0))(react@19.3.0)(zod@4.6.5):
     dependencies:
       convex: 1.46.0(react@19.3.0)
     optionalDependencies:
@@ -2989,7 +2989,7 @@ snapshots:
       typescript: '@typescript/typescript6@6.0.2'
       zod: 4.6.5
 
-  convex-test@0.0.60(convex@1.46.0(react@19.3.0)):
+  convex-test@0.0.61(convex@1.46.0(react@19.3.0)):
     dependencies:
       convex: 1.46.0(react@19.3.0)
 

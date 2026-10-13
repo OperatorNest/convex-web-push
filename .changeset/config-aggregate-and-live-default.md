@@ -1,0 +1,23 @@
+---
+"@operatornest/convex-web-push": minor
+---
+
+- Breaking: add a config group; config.get(ctx) returns { applicationServerKey } and config.verify(ctx) verifies WebCrypto and the configured VAPID key pair without sending.
+- Breaking: client methods without argument fields take only ctx.
+- Breaking: subscriptions.getStatus returns activeCount, pausedCount and lastSuccessAt.
+- Breaking: an unset test-mode decision means live; a live operation without VAPID configuration raises WEB_PUSH_NOT_CONFIGURED.
+- Breaking: errorKind is the closed union DELIVERY_ERROR_KINDS, exported with deliveryErrorKindValidator and DeliveryErrorKind; malformed subscription keys record invalid_subscription_keys.
+- Breaking: every entry point names the serialized subscription PushSubscriptionJSON, validated by the exported pushSubscriptionValidator.
+- Breaking: the browser permission union is PushPermission, returned by getPushPermission, and the registration selector is ServiceWorkerScopeOptions; the service worker parses payloads as Partial<PushNotification>.
+- Breaking: generate-keys requires --subject and rejects example.com, example.net and example.org subjects.
+- Breaking: a package error in the first notifications.sendBatch step throws and stores no batch.
+- Breaking: error data carries retryable only on WEB_PUSH_PROVIDER_ERROR and WEB_PUSH_NETWORK_ERROR, and isWebPushError rejects data with unknown keys or with retryable on any other code.
+- Breaking: notifications.list forwards only numItems, cursor and endCursor from paginationOpts; the component fixes its read budgets.
+- Breaking: the convex-helpers peer range is ^0.1.128.
+- History cursors are accepted when they are at most 4096 characters and a JSON array of at most 16 primitive values.
+- The client passes omitted optional arguments as undefined.
+- A package error in a batch continuation step, including an idempotency conflict, fails the batch after saving the users already enqueued and schedules onBatchComplete.
+- Validate ttlSeconds and the onComplete function handle before reading rows, including for users without subscriptions.
+- Read component configuration once per sendBatch call.
+- Open the click destination in a new window when the service worker cannot navigate an existing window or navigation is rejected.
+- Document every public browser and service worker export.

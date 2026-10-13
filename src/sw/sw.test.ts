@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { required } from "../test-helpers.js";
+import { expectWebPushError, required } from "../test-helpers.js";
 import swSource from "../../sw/convex-web-push-sw.js?raw";
 import {
   buildNotification,
@@ -168,7 +168,24 @@ test("the bundled classic pushService worker behaves like the module handlers", 
   const bad = clickEvent({ url: "https://evil.example/x" });
   handlerFor(listeners, "notificationclick")(bad.event);
   await bad.settle();
-  expect(scope.clients.openWindow).not.toHaveBeenCalled();
+  expect(scope.clients.openWindow).toHaveBeenCalledWith(`${origin}/`);
+});
+
+test("a rejected window navigation opens the click URL in a new window", async () => {
+  for (const load of [registerPushHandlers, loadClassicWorker]) {
+    const focus = vi.fn(async () => {});
+    const navigate = vi.fn(async () => {
+      throw new TypeError("uncontrolled client");
+    });
+    const { scope, listeners } = makeScope([{ url: `${origin}/other`, focus, navigate }]);
+    load(scope);
+    const click = clickEvent({ url: "/next" });
+    handlerFor(listeners, "notificationclick")(click.event);
+    await click.settle();
+    expect(navigate).toHaveBeenCalledWith(`${origin}/next`);
+    expect(focus).not.toHaveBeenCalled();
+    expect(scope.clients.openWindow).toHaveBeenCalledWith(`${origin}/next`);
+  }
 });
 
 test("an external fallback cannot open an external window", () => {
@@ -186,9 +203,7 @@ test("worker platform failures expose only fixed package errors", async () => {
     throw new DOMException("private browser data");
   });
   handlerFor(listeners, "notificationclick")(click.event);
-  await expect(click.settle()).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_SERVICE_WORKER_FAILED" },
-  });
+  await expectWebPushError(click.settle(), "WEB_PUSH_SERVICE_WORKER_FAILED");
   expect(() =>
     registerPushHandlers({
       ...scope,

@@ -1,28 +1,25 @@
 import { base64urlDecode, bytesEqual } from "../shared/base64url.js";
 import { isWebPushError, webPushError } from "../shared/errors.js";
+import type { PushSubscriptionJSON } from "../shared/validators.js";
 
-/** A serialized push subscription contains its endpoint, expiration time and encryption keys. */
-export type PushSubscriptionJSON = {
-  endpoint: string;
-  expirationTime: number | null;
-  keys: { p256dh: string; auth: string };
-};
+export type { PushSubscriptionJSON } from "../shared/validators.js";
 
-/** Permission state records browser notification permission or unsupported push messaging. */
-export type PermissionState = NotificationPermission | "unsupported";
+/** Push permission state records browser notification permission or unsupported push messaging. */
+export type PushPermission = NotificationPermission | "unsupported";
 
-/** Registration options select an existing service worker or its script path. */
-export type RegistrationOptions = {
+/** Service worker scope options select an existing service worker registration or its script path. */
+export type ServiceWorkerScopeOptions = {
   registration?: ServiceWorkerRegistration;
 
   serviceWorkerPath?: string;
 };
 
 /** Subscription options select the application server key and service worker registration. */
-export type SubscribeOptions = RegistrationOptions & {
+export type SubscribeOptions = ServiceWorkerScopeOptions & {
   applicationServerKey: string;
 };
 
+/** Report whether the browser exposes service workers, the Push API and notifications. */
 export function isSupported(): boolean {
   return (
     typeof navigator !== "undefined" &&
@@ -32,7 +29,8 @@ export function isSupported(): boolean {
   );
 }
 
-export function permissionState(): PermissionState {
+/** Read the notification permission, or "unsupported" when push messaging is unavailable. */
+export function getPushPermission(): PushPermission {
   return isSupported() ? Notification.permission : "unsupported";
 }
 
@@ -67,7 +65,7 @@ function waitForActive(
 }
 
 async function resolveRegistration(
-  options: RegistrationOptions,
+  options: ServiceWorkerScopeOptions,
 ): Promise<ServiceWorkerRegistration> {
   let registration: ServiceWorkerRegistration;
   try {
@@ -113,7 +111,7 @@ async function subscribeImpl(options: SubscribeOptions): Promise<PushSubscriptio
 }
 
 async function getSubscriptionImpl(
-  options: RegistrationOptions = {},
+  options: ServiceWorkerScopeOptions = {},
 ): Promise<PushSubscriptionJSON | null> {
   if (!isSupported()) return null;
   const registration =
@@ -123,7 +121,7 @@ async function getSubscriptionImpl(
   return subscription ? toJSON(subscription) : null;
 }
 
-async function unsubscribeImpl(options: RegistrationOptions = {}): Promise<string | null> {
+async function unsubscribeImpl(options: ServiceWorkerScopeOptions = {}): Promise<string | null> {
   if (!isSupported()) return null;
   const registration =
     options.registration ??
@@ -143,17 +141,25 @@ async function browserOperation<T>(operation: () => Promise<T>): Promise<T> {
     throw webPushError("WEB_PUSH_BROWSER_FAILED");
   }
 }
+
+/** Request permission, register the service worker and return the serialized push subscription. */
 export function subscribe(options: SubscribeOptions): Promise<PushSubscriptionJSON> {
   return browserOperation(() => subscribeImpl(options));
 }
+
+/** Return the existing serialized push subscription, or null when none exists or push is unsupported. */
 export function getSubscription(
-  options: RegistrationOptions = {},
+  options: ServiceWorkerScopeOptions = {},
 ): Promise<PushSubscriptionJSON | null> {
   return browserOperation(() => getSubscriptionImpl(options));
 }
-export function unsubscribe(options: RegistrationOptions = {}): Promise<string | null> {
+
+/** Unsubscribe the existing push subscription and return its endpoint, or null when none exists. */
+export function unsubscribe(options: ServiceWorkerScopeOptions = {}): Promise<string | null> {
   return browserOperation(() => unsubscribeImpl(options));
 }
+
+/** Decode a base64url application server key of at most 88 characters into bytes. */
 export function urlBase64ToUint8Array(value: string): Uint8Array<ArrayBuffer> {
   try {
     if (value.length > 88) throw webPushError("WEB_PUSH_INVALID_ARGUMENT");

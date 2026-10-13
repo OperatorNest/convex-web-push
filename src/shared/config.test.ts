@@ -1,15 +1,21 @@
 import { expect, test } from "vitest";
-import { DEFAULT_MAX_PARALLELISM, isTestMode, readConfig, requireVapidConfig } from "./config.js";
+import {
+  DEFAULT_MAX_PARALLELISM,
+  readConfig,
+  requireVapidConfig,
+  resolveTestMode,
+} from "./config.js";
 import { generateVapidKeys } from "./vapid.js";
 import { base64urlEncode } from "./base64url.js";
 
-test("test mode requires a decision and cannot override an enabled environment", () => {
-  expect(() => isTestMode(undefined, undefined)).toThrow();
-  expect(isTestMode(false, undefined)).toBe(false);
-  expect(isTestMode(false, false)).toBe(false);
-  expect(isTestMode(true, undefined)).toBe(true);
-  expect(isTestMode(undefined, true)).toBe(true);
-  expect(isTestMode(false, true)).toBe(true);
+test("unset test mode means live and an enabled environment cannot be disabled by the client", () => {
+  expect(resolveTestMode(undefined, {})).toBe(false);
+  expect(resolveTestMode(false, {})).toBe(false);
+  expect(resolveTestMode(undefined, { WEB_PUSH_TEST_MODE: "false" })).toBe(false);
+  expect(resolveTestMode(true, {})).toBe(true);
+  expect(resolveTestMode(true, { WEB_PUSH_TEST_MODE: "false" })).toBe(true);
+  expect(resolveTestMode(undefined, { WEB_PUSH_TEST_MODE: "true" })).toBe(true);
+  expect(resolveTestMode(false, { WEB_PUSH_TEST_MODE: "true" })).toBe(true);
 });
 
 test("parallelism defaults only when absent and accepts the configured bounds", () => {
@@ -39,11 +45,11 @@ test("non-test work requires all VAPID values", async () => {
   const env = {
     WEB_PUSH_VAPID_PUBLIC_KEY: keys.publicKey,
     WEB_PUSH_VAPID_PRIVATE_KEY: keys.privateKey,
-    WEB_PUSH_VAPID_SUBJECT: "mailto:ops@example.com",
+    WEB_PUSH_VAPID_SUBJECT: "mailto:ops@acme.dev",
   };
   expect(requireVapidConfig(readConfig(env))).toEqual({
     ...keys,
-    subject: "mailto:ops@example.com",
+    subject: "mailto:ops@acme.dev",
   });
   for (const field of Object.keys(env)) {
     expect(() => readConfig({ ...env, [field]: "***" })).toThrowError(

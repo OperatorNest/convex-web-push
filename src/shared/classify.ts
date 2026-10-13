@@ -1,4 +1,4 @@
-import type { SendOutcome } from "./validators.js";
+import type { DeliveryErrorKind, SendOutcome } from "./validators.js";
 
 const MAX_ATTEMPTS = 5;
 
@@ -46,7 +46,9 @@ export function backoffMs(attempts: number, random: number): number {
 }
 
 /** A retry plan either schedules a bounded delay or records why attempts stop. */
-export type RetryPlan = { retry: true; delayMs: number } | { retry: false; reason: string };
+export type RetryPlan =
+  | { retry: true; delayMs: number }
+  | { retry: false; reason: Extract<DeliveryErrorKind, "max_attempts" | "ttl_expired"> };
 
 export function planRetry(input: {
   attempts: number;

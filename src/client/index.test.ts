@@ -63,13 +63,13 @@ function recorder() {
 test("recording, pausing and resuming a subscription updates its stored counts", async () => {
   const t = setup();
   expect(await t.query(internal.admin.getSubscriptionStatus, { userId: "u1" })).toEqual({
-    subscriptions: 0,
-    paused: 0,
+    activeCount: 0,
+    pausedCount: 0,
   });
   await subscribe(t, "u1");
   expect(await t.query(internal.admin.getSubscriptionStatus, { userId: "u1" })).toEqual({
-    subscriptions: 1,
-    paused: 0,
+    activeCount: 1,
+    pausedCount: 0,
   });
   expect(await t.mutation(internal.admin.pauseSubscriptions, { userId: "u1" })).toBe(1);
   expect(
@@ -101,9 +101,11 @@ test("sendNotification sends ttlSeconds, urgency, topic and the serialized notif
       urgency: "high",
       topic: "unread",
     }),
+    "the notification id",
   );
   const notification = required(
     await t.query(internal.admin.getNotification, { notificationId: id, userId: "u1" }),
+    "the notification",
   );
   expect(notification.options).toEqual({ ttlSeconds: 600, urgency: "high", topic: "unread" });
   expect(JSON.parse(notification.payload)).toEqual({ title: "Hi" });
@@ -114,6 +116,7 @@ test("getNotification and getDeliveries follow a notification to delivered", asy
   await subscribe(t, "u1");
   const id = required(
     await t.mutation(internal.admin.sendNotification, { userId: "u1", title: "Hi" }),
+    "the notification id",
   );
   await drain(t);
   expect(
@@ -147,10 +150,12 @@ test("sendRaw sends a string as is and bytes as base64url", async () => {
   await subscribe(t, "u1");
   const text = required(
     await t.mutation(internal.admin.sendRawNotification, { userId: "u1", payload: "custom:42" }),
+    "the notification id",
   );
   const bytes = new Uint8Array([0, 255, 128, 7]);
   const binary = required(
     await t.mutation(internal.admin.sendRawNotification, { userId: "u1", payload: bytes.buffer }),
+    "the notification id",
   );
   expect(
     (await t.query(internal.admin.getNotification, { notificationId: text, userId: "u1" }))
@@ -177,7 +182,10 @@ test("sendNotificationBatch reports progress through getBatch and continues past
     total: 80,
   });
   await drain(t);
-  const done = required(await t.query(internal.admin.getBatch, { batchId: first.batchId }));
+  const done = required(
+    await t.query(internal.admin.getBatch, { batchId: first.batchId }),
+    "the batch",
+  );
   expect(done).toMatchObject({ status: "done", processed: 80 });
   expect(done.notificationIds).toHaveLength(80);
 });
@@ -214,20 +222,19 @@ test("removeSubscription only removes for the matching user, removeAll clears th
     done: true,
   });
   expect(
-    (await t.query(internal.admin.getSubscriptionStatus, { userId: "alice" })).subscriptions,
+    (await t.query(internal.admin.getSubscriptionStatus, { userId: "alice" })).activeCount,
   ).toBe(0);
 });
 
-test("applicationServerKey is null until configured, and verifyDeliveries reports the runtime", async () => {
+test("config.get returns a null key until configured, and config.verify reports the runtime", async () => {
   const t = setup();
-  expect(
-    await t.withIdentity({ tokenIdentifier: "reader" }).query(api.example.applicationServerKey, {}),
-  ).toBeNull();
+  const reader = t.withIdentity({ tokenIdentifier: "reader" });
+  expect(await reader.query(api.example.getConfig, {})).toEqual({ applicationServerKey: null });
   const keys = await configureVapid();
-  expect(
-    await t.withIdentity({ tokenIdentifier: "reader" }).query(api.example.applicationServerKey, {}),
-  ).toBe(keys.publicKey);
-  const report = await t.action(internal.admin.verifyDeliveries, {});
+  expect(await reader.query(api.example.getConfig, {})).toEqual({
+    applicationServerKey: keys.publicKey,
+  });
+  const report = await t.action(internal.admin.verifyConfig, {});
   expect(report).toMatchObject({ ok: true, testMode: false, config: { configured: true } });
 });
 
@@ -292,7 +299,7 @@ test("the client forwards allowedPushHosts and testMode to every call", async ()
   });
 });
 
-test("a plain client leaves optional arguments out instead of sending undefined", async () => {
+test("a plain client passes omitted optional arguments as undefined", async () => {
   const client = new WebPush(components.webPush);
   const { ctx, stop, lastArgs } = recorder();
   await expect(
@@ -306,11 +313,27 @@ test("a plain client leaves optional arguments out instead of sending undefined"
   expect(lastArgs()).toStrictEqual({
     userId: "u1",
     payload: '{"title":"x"}',
+    payloadEncoding: undefined,
     ttlSeconds: 86400,
     urgency: "normal",
+    topic: undefined,
+    idempotencyKey: undefined,
+    onComplete: undefined,
+    testMode: undefined,
+    allowedPushHosts: undefined,
   });
   await expect(client.subscriptions.getStatus(ctx, { userId: "u1" })).rejects.toBe(stop);
-  expect(lastArgs()).toStrictEqual({ userId: "u1" });
+  expect(lastArgs()).toStrictEqual({ testMode: undefined, userId: "u1" });
+});
+
+test("config methods take only ctx and forward the client's test-mode option", async () => {
+  const { ctx, stop, lastArgs } = recorder();
+  const plain = new WebPush(components.webPush);
+  await expect(plain.config.get(ctx)).rejects.toBe(stop);
+  expect(lastArgs()).toStrictEqual({ testMode: undefined });
+  const simulated = new WebPush(components.webPush, { testMode: true });
+  await expect(simulated.config.verify(ctx)).rejects.toBe(stop);
+  expect(lastArgs()).toStrictEqual({ testMode: true });
 });
 
 test("isWebPushError is exported for apps and rejects other errors", () => {
@@ -323,7 +346,7 @@ test("recordSubscription discards undeclared endpoint policy", async () => {
   const { subscription } = await makeSubscription();
   const args = { userId: "u", subscription, allowedPushHosts: ["evil.example.com"] };
   await expect(client.subscriptions.record(ctx, args)).rejects.toBe(stop);
-  expect(lastArgs()).not.toHaveProperty("allowedPushHosts");
+  expect(lastArgs()).toMatchObject({ allowedPushHosts: undefined });
 });
 test("sendRaw rejects oversized text and bytes before calling the component", async () => {
   const client = new WebPush(components.webPush);
@@ -332,16 +355,15 @@ test("sendRaw rejects oversized text and bytes before calling the component", as
     "x".repeat(MAX_PLAINTEXT_BYTES + 1),
     new Uint8Array(MAX_PLAINTEXT_BYTES + 1),
   ]) {
-    await expect(
+    await expectWebPushError(
       client.notifications.sendRaw(ctx, {
         ttlSeconds: 86400,
         urgency: "normal",
         userId: "u",
         payload,
       }),
-    ).rejects.toMatchObject({
-      data: { code: "WEB_PUSH_PAYLOAD_TOO_LARGE" },
-    });
+      "WEB_PUSH_PAYLOAD_TOO_LARGE",
+    );
   }
 });
 
@@ -359,7 +381,10 @@ test.each([false, true])(
     if (failed) vi.stubEnv("WEB_PUSH_MAX_PARALLELISM", "0");
     await drain(t);
     if (failed) vi.stubEnv("WEB_PUSH_MAX_PARALLELISM", undefined);
-    const progress = required(await t.query(internal.admin.getBatch, { batchId: first.batchId }));
+    const progress = required(
+      await t.query(internal.admin.getBatch, { batchId: first.batchId }),
+      "the batch",
+    );
     expect(progress.status).toBe(failed ? "failed" : "done");
     const results = await t.run((ctx) =>
       ctx.db

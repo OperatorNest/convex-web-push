@@ -1,17 +1,17 @@
 import {
-  vWebPushBatchCompleteArgs,
-  vWebPushNotificationCompleteArgs,
+  webPushBatchCompleteArgsValidator,
+  webPushNotificationCompleteArgsValidator,
 } from "@operatornest/convex-web-push";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  batchResults: defineTable(vWebPushBatchCompleteArgs).index("by_batchId", ["batchId"]),
+  batchResults: defineTable(webPushBatchCompleteArgsValidator).index("by_batchId", ["batchId"]),
   notificationResults: defineTable({
     notificationId: v.string(),
     userId: v.string(),
     testMode: v.boolean(),
-    status: vWebPushNotificationCompleteArgs.fields.status,
+    status: webPushNotificationCompleteArgsValidator.fields.status,
     sent: v.number(),
     failed: v.number(),
     gone: v.number(),

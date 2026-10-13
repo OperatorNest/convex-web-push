@@ -1,12 +1,12 @@
 import {
-  vWebPushBatchCompleteArgs,
-  vWebPushNotificationCompleteArgs,
+  webPushBatchCompleteArgsValidator,
+  webPushNotificationCompleteArgsValidator,
 } from "@operatornest/convex-web-push";
 import { internalMutation } from "./_generated/server.js";
 import { v } from "convex/values";
 
 export const onNotificationComplete = internalMutation({
-  args: vWebPushNotificationCompleteArgs,
+  args: webPushNotificationCompleteArgsValidator,
   returns: v.null(),
   handler: async (ctx, { counts, ...rest }) => {
     await ctx.db.insert("notificationResults", {
@@ -20,7 +20,7 @@ export const onNotificationComplete = internalMutation({
 });
 
 export const onBatchComplete = internalMutation({
-  args: vWebPushBatchCompleteArgs,
+  args: webPushBatchCompleteArgsValidator,
   returns: v.null(),
   handler: async (ctx, result) => {
     await ctx.db.insert("batchResults", result);

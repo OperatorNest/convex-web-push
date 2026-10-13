@@ -9,10 +9,10 @@
  */
 
 import type * as cleanup from "../cleanup.js";
+import type * as config from "../config.js";
 import type * as crons from "../crons.js";
 import type * as deliver from "../deliver.js";
 import type * as deliveries from "../deliveries.js";
-import type * as diagnostics from "../diagnostics.js";
 import type * as limits from "../limits.js";
 import type * as notifications from "../notifications.js";
 import type * as pool from "../pool.js";
@@ -27,10 +27,10 @@ import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
   cleanup: typeof cleanup;
+  config: typeof config;
   crons: typeof crons;
   deliver: typeof deliver;
   deliveries: typeof deliveries;
-  diagnostics: typeof diagnostics;
   limits: typeof limits;
   notifications: typeof notifications;
   pool: typeof pool;

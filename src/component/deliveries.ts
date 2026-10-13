@@ -3,12 +3,11 @@ import { boundedString } from "../shared/bounds.js";
 import { webPushError } from "../shared/errors.js";
 import { v } from "convex/values";
 import { isSendOutcome, planRetry } from "../shared/classify.js";
-import { vSendOutcome, type SendOutcome, vUrgency } from "../shared/validators.js";
+import { sendOutcomeValidator, type SendOutcome, urgencyValidator } from "../shared/validators.js";
 import { internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
-import { action, env, internalMutation, query } from "./_generated/server.js";
-import { readConfig, isTestMode } from "../shared/config.js";
-import { verificationDefinition } from "./diagnostics.js";
+import { env, internalMutation, query } from "./_generated/server.js";
+import { resolveTestMode } from "../shared/config.js";
 import { deliveryPool } from "./pool.js";
 import schema from "./schema.js";
 
@@ -17,8 +16,8 @@ const skip = (outcome: SendOutcome) => ({ ok: false as const, outcome });
 const CLOSED = new Set<Doc<"deliveries">["status"]>(["sent", "failed", "gone"]);
 const isClosed = (status: Doc<"deliveries">["status"]) => CLOSED.has(status);
 
-const vBeginResult = v.union(
-  v.object({ ok: v.literal(false), outcome: vSendOutcome }),
+const beginResultValidator = v.union(
+  v.object({ ok: v.literal(false), outcome: sendOutcomeValidator }),
   v.object({
     ok: v.literal(true),
     endpoint: v.string(),
@@ -28,7 +27,7 @@ const vBeginResult = v.union(
     payload: v.string(),
     payloadEncoding: v.optional(v.literal("base64url")),
     ttlSeconds: v.number(),
-    urgency: vUrgency,
+    urgency: urgencyValidator,
     topic: v.optional(v.string()),
     testMode: v.optional(v.boolean()),
     allowedPushHosts: v.optional(v.array(v.string())),
@@ -37,7 +36,7 @@ const vBeginResult = v.union(
 
 export const begin = internalMutation({
   args: { deliveryId: v.id("deliveries") },
-  returns: vBeginResult,
+  returns: beginResultValidator,
   handler: async (ctx, { deliveryId }) => {
     const delivery = await ctx.db.get("deliveries", deliveryId);
     if (!delivery || isClosed(delivery.status)) {
@@ -244,10 +243,7 @@ export const list = query({
   handler: async (ctx, { notificationId, userId, testMode }) => {
     boundedString(userId, 256);
     const notification = await ctx.db.get("notifications", notificationId);
-    if (
-      notification?.userId !== userId ||
-      notification.testMode !== isTestMode(testMode, readConfig(env).testMode)
-    )
+    if (notification?.userId !== userId || notification.testMode !== resolveTestMode(testMode, env))
       throw webPushError("WEB_PUSH_NOT_FOUND");
     return ctx.db
       .query("deliveries")
@@ -255,5 +251,3 @@ export const list = query({
       .take(100);
   },
 });
-
-export const verify = action(verificationDefinition);

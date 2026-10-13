@@ -4,8 +4,8 @@ import { base64urlEncode, base64urlDecode } from "../shared/base64url.js";
 import { webPushError } from "../shared/errors.js";
 import { checkPushEndpoint } from "../shared/push.js";
 import { sha256Hex } from "../shared/sha256.js";
-import { vPushSubscription } from "../shared/validators.js";
-import { readConfig, requireVapidConfig, isTestMode } from "../shared/config.js";
+import { pushSubscriptionValidator } from "../shared/validators.js";
+import { readConfig, requireVapidConfig, resolveTestMode } from "../shared/config.js";
 import { isP256PublicKey, vapidKeyFingerprint } from "../shared/vapid.js";
 import { internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel.js";
@@ -80,14 +80,14 @@ export const record = mutation({
   args: {
     userId: v.string(),
     testMode: v.optional(v.boolean()),
-    subscription: vPushSubscription,
+    subscription: pushSubscriptionValidator,
     userAgent: v.optional(v.string()),
     allowedPushHosts: v.optional(v.array(v.string())),
   },
   returns: v.object({ subscriptionId: v.id("subscriptions"), created: v.boolean() }),
   handler: async (ctx, args) => {
     const config = readConfig(env);
-    const testMode = isTestMode(args.testMode, config.testMode);
+    const testMode = resolveTestMode(args.testMode, env);
     if (!testMode) requireVapidConfig(config);
     boundedString(args.userId, 256);
     validateHosts(args.allowedPushHosts);
@@ -157,7 +157,7 @@ export const remove = mutation({
   args: { endpoint: v.string(), userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: v.boolean(),
   handler: async (ctx, { endpoint, userId, testMode: requestedTestMode }) => {
-    const testMode = isTestMode(requestedTestMode, readConfig(env).testMode);
+    const testMode = resolveTestMode(requestedTestMode, env);
     if (endpoint.length === 0 || endpoint.length > 4096 || !endpoint.isWellFormed()) invalid();
     boundedString(userId, 256);
     const existing = await ctx.db
@@ -196,13 +196,13 @@ async function purgeUserBatch(
   return { removed: rows.length, done };
 }
 
-const vPurgeResult = v.object({ removed: v.number(), done: v.boolean() });
+const purgeResultValidator = v.object({ removed: v.number(), done: v.boolean() });
 
 export const removeAll = mutation({
   args: { userId: v.string(), testMode: v.optional(v.boolean()) },
-  returns: vPurgeResult,
+  returns: purgeResultValidator,
   handler: async (ctx, { userId, testMode: requestedTestMode }) => {
-    const testMode = isTestMode(requestedTestMode, readConfig(env).testMode);
+    const testMode = resolveTestMode(requestedTestMode, env);
     boundedString(userId, 256);
     const current = await registrationUser(ctx, userId, testMode);
     const generation = current.generation + 1;
@@ -213,7 +213,7 @@ export const removeAll = mutation({
 
 export const purgeUser = internalMutation({
   args: { userId: v.string(), testMode: v.boolean(), generation: v.number() },
-  returns: vPurgeResult,
+  returns: purgeResultValidator,
   handler: (ctx, { userId, testMode, generation }) =>
     purgeUserBatch(ctx, userId, testMode, generation),
 });
@@ -221,12 +221,12 @@ export const purgeUser = internalMutation({
 export const getStatus = query({
   args: { userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: v.object({
-    subscriptions: v.number(),
-    paused: v.number(),
+    activeCount: v.number(),
+    pausedCount: v.number(),
     lastSuccessAt: v.optional(v.number()),
   }),
   handler: async (ctx, { userId, testMode: requestedTestMode }) => {
-    const testMode = isTestMode(requestedTestMode, readConfig(env).testMode);
+    const testMode = resolveTestMode(requestedTestMode, env);
     const { active, paused } = await liveSubscriptions(ctx, userId, testMode);
     let lastSuccessAt: number | undefined;
     for (const row of [...active, ...paused]) {
@@ -235,8 +235,8 @@ export const getStatus = query({
       }
     }
     return {
-      subscriptions: active.length,
-      paused: paused.length,
+      activeCount: active.length,
+      pausedCount: paused.length,
       ...(lastSuccessAt !== undefined && { lastSuccessAt }),
     };
   },
@@ -267,34 +267,12 @@ export const pause = mutation({
   args: { userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: v.number(),
   handler: (ctx, { userId, testMode }) =>
-    moveUserSubscriptions(
-      ctx,
-      userId,
-      isTestMode(testMode, readConfig(env).testMode),
-      "active",
-      "paused",
-    ),
+    moveUserSubscriptions(ctx, userId, resolveTestMode(testMode, env), "active", "paused"),
 });
 
 export const resume = mutation({
   args: { userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: v.number(),
   handler: (ctx, { userId, testMode }) =>
-    moveUserSubscriptions(
-      ctx,
-      userId,
-      isTestMode(testMode, readConfig(env).testMode),
-      "paused",
-      "active",
-    ),
-});
-
-export const readApplicationServerKey = query({
-  args: { testMode: v.optional(v.boolean()) },
-  returns: v.union(v.string(), v.null()),
-  handler: (_ctx, args) => {
-    const config = readConfig(env);
-    if (!isTestMode(args.testMode, config.testMode)) requireVapidConfig(config);
-    return config.publicKey ?? null;
-  },
+    moveUserSubscriptions(ctx, userId, resolveTestMode(testMode, env), "paused", "active"),
 });

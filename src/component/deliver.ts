@@ -4,13 +4,13 @@ import { v } from "convex/values";
 import { base64urlDecode } from "../shared/base64url.js";
 import { importVapidPrivateKey, vapidKeyFingerprint } from "../shared/vapid.js";
 import { sendWebPush } from "../shared/send.js";
-import { vSendOutcome, type SendOutcome } from "../shared/validators.js";
+import { sendOutcomeValidator, type SendOutcome } from "../shared/validators.js";
 import { internal } from "./_generated/api.js";
 import { env, internalAction } from "./_generated/server.js";
 
 export const run = internalAction({
   args: { deliveryId: v.id("deliveries") },
-  returns: vSendOutcome,
+  returns: sendOutcomeValidator,
   handler: async (ctx, { deliveryId }): Promise<SendOutcome> => {
     const job = await ctx.runMutation(internal.deliveries.begin, { deliveryId });
     if (!job.ok) return job.outcome;

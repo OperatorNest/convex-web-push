@@ -1,9 +1,9 @@
 import { base64urlDecode } from "./base64url.js";
 import { classifyPushStatus } from "./classify.js";
 import { encryptAes128gcm } from "./encrypt.js";
-import { isWebPushError, webPushError } from "./errors.js";
+import { isWebPushError, webPushError, type WebPushErrorCode } from "./errors.js";
 import { checkPushEndpoint } from "./push.js";
-import type { SendOutcome, Urgency } from "./validators.js";
+import type { DeliveryErrorKind, SendOutcome, Urgency } from "./validators.js";
 import { signVapidJwt, vapidAuthorization } from "./vapid.js";
 
 const SEND_TIMEOUT_MS = 10_000;
@@ -23,13 +23,18 @@ export type SendWebPushInput = {
   now?: number | undefined;
 };
 
+const PREPARATION_ERROR_KINDS: Partial<Record<WebPushErrorCode, DeliveryErrorKind>> = {
+  WEB_PUSH_PAYLOAD_TOO_LARGE: "payload_too_large",
+  WEB_PUSH_INVALID_ARGUMENT: "invalid_subscription_keys",
+};
+
 function failure(error: unknown): SendOutcome {
   const data = isWebPushError(error)
     ? error.data
     : webPushError("WEB_PUSH_CRYPTO_UNSUPPORTED").data;
   return {
     kind: "permanent",
-    errorKind: data.code.slice("WEB_PUSH_".length).toLowerCase(),
+    errorKind: PREPARATION_ERROR_KINDS[data.code] ?? "crypto_unsupported",
     error: data,
   };
 }

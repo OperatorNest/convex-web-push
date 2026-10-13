@@ -110,7 +110,8 @@ function importVapidPublicKey(publicKey: string): Promise<CryptoKey> {
   ]);
 }
 
-const RESERVED_HOST = /(^|\.)(localhost|local|invalid|test)$/i;
+const RESERVED_HOST =
+  /(^|\.)(localhost|local|invalid|test|example|example\.com|example\.net|example\.org)$/i;
 
 export function validateVapidSubject(subject: string | undefined): string | null {
   if (!subject) return "WEB_PUSH_VAPID_SUBJECT is not set";

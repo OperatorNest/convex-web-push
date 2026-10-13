@@ -1,15 +1,16 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import {
-  vBatchStatus,
-  vCounts,
-  vDeliveryStatus,
-  vNotificationStatus,
-  vSendFields,
-  vPushService,
-  vSubscriptionStatus,
-  vUrgency,
-  vWebPushError,
+  deliveryErrorKindValidator,
+  batchStatusValidator,
+  countsValidator,
+  deliveryStatusValidator,
+  notificationStatusValidator,
+  sendFieldsValidator,
+  pushServiceValidator,
+  subscriptionStatusValidator,
+  urgencyValidator,
+  webPushErrorValidator,
 } from "../shared/validators.js";
 
 export default defineSchema({
@@ -31,10 +32,10 @@ export default defineSchema({
     expirationTime: v.optional(v.number()),
 
     userAgent: v.optional(v.string()),
-    pushService: vPushService,
+    pushService: pushServiceValidator,
 
     vapidPublicKeyHash: v.string(),
-    status: vSubscriptionStatus,
+    status: subscriptionStatusValidator,
     consecutiveFailures: v.number(),
     lastSuccessAt: v.optional(v.number()),
 
@@ -52,10 +53,14 @@ export default defineSchema({
     testMode: v.boolean(),
     payload: v.string(),
     payloadEncoding: v.optional(v.literal("base64url")),
-    options: v.object({ ttlSeconds: v.number(), urgency: vUrgency, topic: v.optional(v.string()) }),
+    options: v.object({
+      ttlSeconds: v.number(),
+      urgency: urgencyValidator,
+      topic: v.optional(v.string()),
+    }),
     idempotencyKey: v.optional(v.string()),
-    status: vNotificationStatus,
-    counts: vCounts,
+    status: notificationStatusValidator,
+    counts: countsValidator,
     allowedPushHosts: v.optional(v.array(v.string())),
 
     onComplete: v.optional(v.string()),
@@ -71,10 +76,10 @@ export default defineSchema({
     userIds: v.array(v.string()),
     nextIndex: v.number(),
     notificationIds: v.array(v.id("notifications")),
-    send: vSendFields,
+    send: sendFieldsValidator,
     onComplete: v.optional(v.string()),
-    errorCode: v.optional(vWebPushError.fields.code),
-    status: vBatchStatus,
+    errorCode: v.optional(webPushErrorValidator.fields.code),
+    status: batchStatusValidator,
     createdAt: v.number(),
   }).index("by_status_and_createdAt", ["status", "createdAt"]),
 
@@ -83,14 +88,14 @@ export default defineSchema({
     subscriptionId: v.id("subscriptions"),
     userId: v.string(),
     testMode: v.boolean(),
-    status: vDeliveryStatus,
+    status: deliveryStatusValidator,
 
     attempts: v.number(),
     subscriptionRevision: v.optional(v.number()),
     providerStatus: v.optional(v.number()),
-    errorKind: v.optional(v.string()),
+    errorKind: v.optional(deliveryErrorKindValidator),
 
-    error: v.optional(vWebPushError),
+    error: v.optional(webPushErrorValidator),
     retryAfterMs: v.optional(v.number()),
     createdAt: v.number(),
     sentAt: v.optional(v.number()),

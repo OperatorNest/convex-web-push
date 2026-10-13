@@ -3,7 +3,7 @@ import { base64urlDecode, base64urlEncode, bytesEqual } from "./base64url.js";
 import { encryptAes128gcm, encryptAes128gcmWithFixedKeys, MAX_PLAINTEXT_BYTES } from "./encrypt.js";
 import { isWebPushError } from "./errors.js";
 import { RFC8291_VECTOR as V } from "./vectors.js";
-import { decryptAes128gcm, makeSubscription } from "../test-helpers.js";
+import { decryptAes128gcm, expectWebPushError, makeSubscription } from "../test-helpers.js";
 
 const fixed = {
   ephemeral: { privateKeyD: base64urlDecode(V.asPrivate), publicKey: base64urlDecode(V.asPublic) },
@@ -60,9 +60,10 @@ test("accepts exactly the maximum payload and rejects one byte more", async () =
   expect(body.byteLength).toBe(4096);
   const decrypted = await decryptAes128gcm(body, sub.uaPrivate, sub.uaPublic, sub.authSecret);
   expect(decrypted.byteLength).toBe(MAX_PLAINTEXT_BYTES);
-  await expect(
+  await expectWebPushError(
     encryptAes128gcm({ plaintext: new Uint8Array(MAX_PLAINTEXT_BYTES + 1), ...sub }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_PAYLOAD_TOO_LARGE" } });
+    "WEB_PUSH_PAYLOAD_TOO_LARGE",
+  );
 });
 
 test("rejects malformed subscriber keys", async () => {
@@ -73,10 +74,12 @@ test("rejects malformed subscriber keys", async () => {
   ).rejects.toSatisfy(isWebPushError);
   const wrongPrefix = sub.uaPublic.slice();
   wrongPrefix[0] = 2;
-  await expect(
+  await expectWebPushError(
     encryptAes128gcm({ plaintext, ...sub, uaPublic: wrongPrefix }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
-  await expect(
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+  await expectWebPushError(
     encryptAes128gcm({ plaintext, ...sub, authSecret: new Uint8Array(15) }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
 });

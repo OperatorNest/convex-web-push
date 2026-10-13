@@ -13,7 +13,6 @@
     "noErrorTruncation": true,
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "composite": true,
     "isolatedModules": true,
     "declaration": true,
     "declarationMap": true,
@@ -21,8 +20,7 @@
     "rootDir": "./src",
     "outDir": "./dist",
     "verbatimModuleSyntax": true,
-    "skipLibCheck": true,
-    "exactOptionalPropertyTypes": false
+    "skipLibCheck": true
   },
   "include": ["./src/**/*"]
 }

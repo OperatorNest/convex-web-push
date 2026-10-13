@@ -1,52 +1,19 @@
-import { execFile, execFileSync, spawn } from "node:child_process";
-import { promisify } from "node:util";
-import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
-import { createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
-import { acquireLock } from "./with-local-lock.mjs";
+import { runSmoke, smokeEnv, step } from "./smoke-harness.mjs";
 
 const root = resolve(import.meta.dirname, "..");
-const workspace = mkdtempSync(join(tmpdir(), "web-push-smoke-"));
 const api = anyApi;
-const execFileAsync = promisify(execFile);
-const SMOKE_ENV = [
-  "WEB_PUSH_VAPID_PUBLIC_KEY",
+const VAPID_ENV_NAMES = [
   "WEB_PUSH_VAPID_PRIVATE_KEY",
+  "WEB_PUSH_VAPID_PUBLIC_KEY",
   "WEB_PUSH_VAPID_SUBJECT",
-  "WEB_PUSH_TEST_MODE",
 ];
-const cliEnv = { ...process.env, CONVEX_AGENT_MODE: "anonymous" };
-for (const name of [
-  "CONVEX_DEPLOYMENT",
-  "CONVEX_DEPLOY_KEY",
-  "CONVEX_SELF_HOSTED_URL",
-  "CONVEX_SELF_HOSTED_ADMIN_KEY",
-])
-  delete cliEnv[name];
-
 const BROADCAST_USERS = 80;
 const PER_USER_SUBSCRIPTIONS = 2;
-
-const steps = [];
-const failures = [];
-let stepNumber = 0;
-
-async function step(name, fn) {
-  stepNumber += 1;
-  const label = `${String(stepNumber).padStart(2, "0")} ${name}`;
-  try {
-    await fn();
-    steps.push({ label, ok: true });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    steps.push({ label, ok: false, message });
-    failures.push(`${label}: ${message}`);
-  }
-}
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -77,142 +44,31 @@ async function waitFor(what, fn, timeoutMs = 90_000) {
   }
 }
 
-function convexCli(...args) {
-  return execFileSync("pnpm", ["exec", "convex", ...args], {
-    encoding: "utf8",
-    env: cliEnv,
-    cwd: workspace,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-function parseRunOutput(stdout) {
-  if (stdout.trim() === "") return null;
-  const lines = stdout.trim().split("\n");
-  for (let i = 0; i < lines.length; i++) {
+function callWith(backend) {
+  return async (name, args = {}) => {
     try {
-      return JSON.parse(lines.slice(i).join("\n"));
-    } catch {
-      // Not JSON yet: this line is a log line.
+      return await backend.runFunction(name, args);
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      const failure = new Error(text.slice(0, 400));
+      const code = /WEB_PUSH_[A-Z_]+/.exec(text)?.[0];
+      if (code) failure.data = { code };
+      throw failure;
     }
-  }
-  throw new Error(`Unparseable convex run output: ${stdout.slice(0, 200)}`);
-}
-
-async function call(name, args = {}) {
-  try {
-    const { stdout } = await execFileAsync(
-      "pnpm",
-      ["exec", "convex", "run", name, JSON.stringify(args)],
-      { cwd: workspace, env: cliEnv, maxBuffer: 10 * 1024 * 1024 },
-    );
-    return parseRunOutput(stdout);
-  } catch (error) {
-    const text = `${error.stderr ?? ""}${error.stdout ?? ""}${error.message}`;
-    const failure = new Error(text.slice(0, 400));
-    const code = /WEB_PUSH_[A-Z_]+/.exec(text)?.[0];
-    if (code) failure.data = { code };
-    throw failure;
-  }
-}
-
-async function freePort() {
-  const server = createServer();
-  await new Promise((resolvePort, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolvePort);
-  });
-  const address = server.address();
-  assert(address && typeof address !== "string", "No ephemeral port available");
-  await new Promise((resolveClose) => server.close(resolveClose));
-  return address.port;
-}
-async function startDev() {
-  for (const path of ["src", "dist", "example", "package.json", "convex.json"])
-    cpSync(join(root, path), join(workspace, path), { recursive: true });
-  symlinkSync(join(root, "node_modules"), join(workspace, "node_modules"), "dir");
-  const cloud = await freePort();
-  const site = await freePort();
-  const child = spawn(
-    "pnpm",
-    [
-      "exec",
-      "convex",
-      "dev",
-      "--typecheck",
-      "disable",
-      "--tail-logs",
-      "disable",
-      "--local-cloud-port",
-      String(cloud),
-      "--local-site-port",
-      String(site),
-    ],
-    { cwd: workspace, env: cliEnv, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  let output = "";
-  const collect = (chunk) => {
-    output += chunk.toString();
   };
-  child.stdout.on("data", collect);
-  child.stderr.on("data", collect);
-  const stop = async () => {
-    if (child.exitCode !== null) return;
-    child.kill("SIGTERM");
-    await Promise.race([
-      new Promise((resolveExit) => child.once("exit", resolveExit)),
-      sleep(15_000),
-    ]);
-    if (child.exitCode === null) child.kill("SIGKILL");
-  };
-  try {
-    await waitFor(
-      "convex dev to push the functions",
-      () => {
-        if (child.exitCode !== null) {
-          throw new Error(`convex dev exited with ${child.exitCode}:\n${output.slice(-2000)}`);
-        }
-        return /Convex functions ready/.test(output);
-      },
-      300_000,
-    );
-  } catch (error) {
-    await stop();
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message}\n--- convex dev output ---\n${output.slice(-2000)}`, {
-      cause: error,
-    });
-  }
-  return { stop, output: () => output };
-}
-
-function deploymentUrl() {
-  const config = JSON.parse(
-    readFileSync(join(workspace, ".convex/local/default/config.json"), "utf8"),
-  );
-  return `http://127.0.0.1:${config.ports.cloud}`;
 }
 
 function generateKeys() {
   const out = execFileSync(
-    "node",
-    [
-      join(root, "bin/convex-web-push.js"),
-      "generate-keys",
-      "--subject",
-      "mailto:smoke@example.com",
-    ],
-    { encoding: "utf8", env: cliEnv },
+    process.execPath,
+    [join(root, "bin/convex-web-push.js"), "generate-keys", "--subject", "mailto:smoke@acme.dev"],
+    { encoding: "utf8", env: smokeEnv },
   );
   const entries = out
     .split("\n")
     .filter((line) => /^WEB_PUSH_VAPID_[A-Z_]+=/.test(line))
     .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]);
-  assertEqual(
-    entries.map(([name]) => name).toSorted(),
-    SMOKE_ENV.slice(0, 3).toSorted(),
-    "CLI env lines",
-  );
+  assertEqual(entries.map(([name]) => name).toSorted(), VAPID_ENV_NAMES, "CLI env lines");
   return Object.fromEntries(entries);
 }
 
@@ -246,54 +102,41 @@ async function errorCode(promise) {
   return "no error";
 }
 
-const detail = (notificationId, userId) =>
-  call("admin:getNotification", { notificationId, userId });
-
-const settled = (notificationId, userId) =>
-  waitFor(`notification ${notificationId} to settle`, async () => {
-    const found = await detail(notificationId, userId);
-    return found && ["delivered", "failed"].includes(found.status) ? found : null;
-  });
-
-async function main(client) {
+await runSmoke(async (backend) => {
   const run = crypto.randomUUID().slice(0, 8);
   const user = `smoke-${run}`;
+  const call = callWith(backend);
   const notification = (args) => call("admin:sendNotification", { userId: user, ...args });
   const page = (cursor, numItems) =>
     call("admin:listNotifications", { userId: user, paginationOpts: { numItems, cursor } });
+  const detail = (notificationId, userId) =>
+    call("admin:getNotification", { notificationId, userId });
+  const settled = (notificationId, userId) =>
+    waitFor(`notification ${notificationId} to settle`, async () => {
+      const found = await detail(notificationId, userId);
+      return found && ["delivered", "failed"].includes(found.status) ? found : null;
+    });
 
   const keys = generateKeys();
-  for (const [name, value] of Object.entries({ ...keys, WEB_PUSH_TEST_MODE: "true" })) {
-    convexCli("env", "set", "--", name, value);
-  }
+  for (const [name, value] of Object.entries({ ...keys, WEB_PUSH_TEST_MODE: "true" }))
+    await backend.setEnvironmentVariable(name, value);
 
   await step(
-    "verifyDeliveries passes every WebCrypto operation with the configured keys",
+    "config.verify passes every WebCrypto operation and config.get returns the configured key",
     async () => {
       const report = await waitFor("the env to reach the component", async () => {
-        const result = await call("admin:verifyDeliveries", {});
+        const result = await call("admin:verifyConfig", {});
         return result.config.configured && result.testMode ? result : null;
       });
-      assert(report.ok === true, `verifyDeliveries failed: ${JSON.stringify(report.checks)}`);
+      assert(report.ok === true, `verifyConfig failed: ${JSON.stringify(report.checks)}`);
       assert(
         report.checks.some((c) => c.name === "RFC 8291 Appendix A vector" && c.ok),
         "the RFC 8291 vector check did not pass",
       );
-      assert(
-        report.checks.some((c) => c.name === "configured VAPID key pair matches" && c.ok),
-        "the configured key pair was not verified",
-      );
-      assert(
-        JSON.parse(
-          convexCli(
-            "run",
-            "--component",
-            "webPush",
-            "subscriptions:readApplicationServerKey",
-            "{}",
-          ),
-        ) === keys.WEB_PUSH_VAPID_PUBLIC_KEY,
-        "applicationServerKey did not return the configured key",
+      assertEqual(
+        await backend.runFunction("config:get", {}, { component: "webPush" }),
+        { applicationServerKey: keys.WEB_PUSH_VAPID_PUBLIC_KEY },
+        "config.get",
       );
     },
   );
@@ -313,6 +156,7 @@ async function main(client) {
   });
 
   await step("the public functions reject a caller who is not signed in", async () => {
+    const client = new ConvexHttpClient(backend.url, { logger: false });
     const mutation = client.mutation(api.example.notifyMe, { title: "nope" });
     const message = await mutation.then(
       () => "no error",
@@ -454,7 +298,7 @@ async function main(client) {
       "pause should affect one subscription",
     );
     assert(
-      (await call("admin:getSubscriptionStatus", { userId: user })).paused === 1,
+      (await call("admin:getSubscriptionStatus", { userId: user })).pausedCount === 1,
       "status should show one paused subscription",
     );
     assert((await notification({ title: "while paused" })) === null, "paused user got a send");
@@ -505,6 +349,13 @@ async function main(client) {
     assertEqual(code, "WEB_PUSH_INVALID_ARGUMENT", "error code");
   });
 
+  await step("an invalid TTL fails for a user without subscriptions", async () => {
+    const code = await errorCode(
+      call("admin:sendNotification", { userId: `${user}-none`, title: "bad ttl", ttlSeconds: -1 }),
+    );
+    assertEqual(code, "WEB_PUSH_INVALID_ARGUMENT", "error code");
+  });
+
   await step(
     "an oversized notification fails on the client with the same error shape",
     async () => {
@@ -514,50 +365,37 @@ async function main(client) {
   );
 
   await step(
-    "sending without a test-mode decision fails with WEB_PUSH_INVALID_ARGUMENT",
+    "unset test mode means live, so sending without a private key fails with WEB_PUSH_NOT_CONFIGURED",
     async () => {
       try {
-        convexCli("env", "remove", "WEB_PUSH_TEST_MODE");
-        const code = await waitFor("the missing test-mode decision", async () => {
-          const result = await errorCode(notification({ title: "undecided" }));
-          return result === "WEB_PUSH_INVALID_ARGUMENT" ? result : null;
+        await backend.runConvexCli(["env", "remove", "WEB_PUSH_TEST_MODE"]);
+        await backend.runConvexCli(["env", "remove", "WEB_PUSH_VAPID_PRIVATE_KEY"]);
+        const code = await waitFor("the missing private key", async () => {
+          const result = await errorCode(notification({ title: "unconfigured" }));
+          return result === "WEB_PUSH_NOT_CONFIGURED" ? result : null;
         });
-        assertEqual(code, "WEB_PUSH_INVALID_ARGUMENT", "error code");
+        assertEqual(code, "WEB_PUSH_NOT_CONFIGURED", "error code");
       } finally {
-        convexCli("env", "set", "WEB_PUSH_TEST_MODE", "true");
+        await backend.setEnvironmentVariable(
+          "WEB_PUSH_VAPID_PRIVATE_KEY",
+          keys.WEB_PUSH_VAPID_PRIVATE_KEY,
+        );
+        await backend.setEnvironmentVariable("WEB_PUSH_TEST_MODE", "true");
       }
     },
   );
 
-  await step("live sending without a private key fails with WEB_PUSH_NOT_CONFIGURED", async () => {
-    try {
-      convexCli("env", "set", "WEB_PUSH_TEST_MODE", "false");
-      convexCli("env", "remove", "WEB_PUSH_VAPID_PRIVATE_KEY");
-      const code = await waitFor("the missing private key", async () => {
-        const result = await errorCode(notification({ title: "unconfigured" }));
-        return result === "WEB_PUSH_NOT_CONFIGURED" ? result : null;
-      });
-      assertEqual(code, "WEB_PUSH_NOT_CONFIGURED", "error code");
-    } finally {
-      convexCli("env", "set", "--", "WEB_PUSH_VAPID_PRIVATE_KEY", keys.WEB_PUSH_VAPID_PRIVATE_KEY);
-      convexCli("env", "set", "WEB_PUSH_TEST_MODE", "true");
-    }
-  });
-
   await step("cleanup deletes finished rows past retention", async () => {
     await waitFor("test mode to come back", async () => {
-      const report = await call("admin:verifyDeliveries", {});
+      const report = await call("admin:verifyConfig", {});
       return report.testMode && report.config.configured;
     });
     const eightDays = 8 * 24 * 60 * 60 * 1000;
-    const out = convexCli(
-      "run",
-      "--component",
-      "webPush",
+    const result = await backend.runFunction(
       "cleanup:run",
-      JSON.stringify({ now: Date.now() + eightDays }),
+      { now: Date.now() + eightDays },
+      { component: "webPush" },
     );
-    const result = JSON.parse(out.slice(out.indexOf("{")));
     assert(result.deleted > 0, `cleanup deleted nothing: ${JSON.stringify(result)}`);
     assertEqual(
       await errorCode(detail(firstId, user)),
@@ -571,43 +409,9 @@ async function main(client) {
     const removed = await call("admin:removeAll", { userId: user });
     assertEqual(removed, { removed: 1, done: true }, "removeAll");
     assertEqual(
-      (await call("admin:getSubscriptionStatus", { userId: user })).subscriptions,
+      (await call("admin:getSubscriptionStatus", { userId: user })).activeCount,
       0,
       "subscriptions left",
     );
   });
-}
-
-const release = await acquireLock();
-let dev;
-try {
-  console.log("Building the package...");
-  execFileSync("pnpm", ["build"], { cwd: root, env: cliEnv, stdio: "inherit" });
-  console.log("Starting the local Convex backend and pushing the example app...");
-  dev = await startDev();
-  const url = deploymentUrl(dev.output());
-  console.log(`Local deployment ready at ${url}`);
-  await main(new ConvexHttpClient(url));
-} catch (error) {
-  failures.push(`fatal: ${error instanceof Error ? error.message : String(error)}`);
-} finally {
-  for (const name of SMOKE_ENV) {
-    try {
-      convexCli("env", "remove", name);
-    } catch {
-      // Already unset, or the backend is gone.
-    }
-  }
-  await dev?.stop();
-  rmSync(workspace, { recursive: true, force: true });
-  release();
-}
-
-console.log("\nSmoke summary");
-for (const s of steps) console.log(`  ${s.ok ? "PASS" : "FAIL"}  ${s.label}`);
-if (failures.length > 0) {
-  console.error(`\n${failures.length} failure(s):\n  ${failures.join("\n  ")}`);
-  process.exitCode = 1;
-} else {
-  console.log(`\nAll ${steps.length} steps passed in the real Convex runtime.`);
-}
+});

@@ -95,7 +95,7 @@ test("a broadcast reaches every user with a subscription", async () => {
   expect(results.map((r) => r.notificationId !== null)).toEqual([true, true, false]);
 });
 
-test("without opt-in, notify fails with a typed configuration error", async () => {
+test("unset test mode means live, so notify without VAPID keys fails with NOT_CONFIGURED", async () => {
   const t = setup();
   await saveSubscription(t, "u1");
   vi.stubEnv("WEB_PUSH_TEST_MODE", undefined);
@@ -106,9 +106,9 @@ test("without opt-in, notify fails with a typed configuration error", async () =
       (e: unknown) => e,
     );
   expect(isWebPushError(error)).toBe(true);
-  if (isWebPushError(error)) expect(error.data.code).toBe("WEB_PUSH_INVALID_ARGUMENT");
+  if (isWebPushError(error)) expect(error.data.code).toBe("WEB_PUSH_NOT_CONFIGURED");
   await expect(
-    t.withIdentity({ subject: "reader" }).query(api.example.applicationServerKey, {}),
+    t.withIdentity({ subject: "reader" }).query(api.example.getConfig, {}),
   ).rejects.toThrow();
 });
 
@@ -139,10 +139,10 @@ test("public functions need a signed-in user and only act on that user", async (
   const bob = t.withIdentity({ subject: "bob" });
   await alice.mutation(api.example.recordSubscription, { subscription });
   expect(await alice.query(api.example.getMySubscriptionStatus, {})).toMatchObject({
-    subscriptions: 1,
+    activeCount: 1,
   });
   expect(await bob.query(api.example.getMySubscriptionStatus, {})).toMatchObject({
-    subscriptions: 0,
+    activeCount: 0,
   });
 
   expect(
@@ -198,7 +198,7 @@ test("equal subjects from different issuers own different subscriptions", async 
   });
   await alice.mutation(api.example.recordSubscription, { subscription });
   expect(await bob.query(api.example.getMySubscriptionStatus, {})).toMatchObject({
-    subscriptions: 0,
+    activeCount: 0,
   });
   expect(
     await bob.mutation(api.example.removeSubscription, { endpoint: subscription.endpoint }),

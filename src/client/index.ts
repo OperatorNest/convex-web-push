@@ -19,7 +19,7 @@ import type {
   WebPushNotificationCompleteArgs,
   SendFields,
   Urgency,
-  PushSubscription,
+  PushSubscriptionJSON,
 } from "../shared/validators.js";
 
 export { generateVapidKeys, type VapidKeys } from "../shared/vapid.js";
@@ -31,29 +31,34 @@ export {
   type WebPushErrorData,
 } from "../shared/errors.js";
 export {
-  vWebPushBatchCompleteArgs,
-  vWebPushNotificationCompleteArgs,
-  vPushSubscription,
+  DELIVERY_ERROR_KINDS,
+  deliveryErrorKindValidator,
+  webPushBatchCompleteArgsValidator,
+  webPushNotificationCompleteArgsValidator,
+  pushSubscriptionValidator,
 } from "../shared/validators.js";
 export type { PushNotification } from "../shared/notification.js";
 export type {
   WebPushBatchCompleteArgs,
   WebPushNotificationCompleteArgs,
   Urgency,
-  PushSubscription,
+  PushSubscriptionJSON,
   PushService,
+  DeliveryErrorKind,
   SubscriptionStatus,
   NotificationStatus,
   DeliveryStatus,
   BatchStatus,
 } from "../shared/validators.js";
 
-/** The query context can read stored component rows. */
+// shared-block:begin
+/** Runs component queries; app queries, mutations and actions provide it. */
 export type QueryContext = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
-/** The mutation context can update component rows atomically. */
+/** Runs component mutations; app mutations and actions provide it. */
 export type MutationContext = Pick<GenericMutationCtx<GenericDataModel>, "runMutation">;
-/** The action context can execute component verification. */
+/** Runs component actions; app actions provide it. */
 export type ActionContext = Pick<GenericActionCtx<GenericDataModel>, "runAction">;
+// shared-block:end
 
 /** A notification ID identifies a stored component notification. */
 export type NotificationId = string;
@@ -89,86 +94,75 @@ export type SendOptions = {
 
 /** WebPush records subscriptions and enqueues notifications with durable delivery attempts. */
 export class WebPush {
+  /** Creates a client for the mounted component; `options` apply to every call. */
   constructor(
     private readonly component: ComponentApi,
     private readonly options: WebPushOptions = {},
   ) {}
 
+  /** Records, removes, pauses, resumes and reports a user's push subscriptions. */
   readonly subscriptions = {
     /** Record or refresh a push subscription for a user. */
     record: (
       ctx: MutationContext,
-      args: { userId: string; subscription: PushSubscription; userAgent?: string | undefined },
+      args: { userId: string; subscription: PushSubscriptionJSON; userAgent?: string | undefined },
     ) => {
-      return ctx.runMutation(
-        this.component.subscriptions.record,
-        definedFields({
-          testMode: this.options.testMode,
-          userId: args.userId,
-          subscription: {
-            endpoint: args.subscription.endpoint,
-            expirationTime: args.subscription.expirationTime,
-            keys: { p256dh: args.subscription.keys.p256dh, auth: args.subscription.keys.auth },
-          },
-          userAgent: args.userAgent,
-          allowedPushHosts: this.options.allowedPushHosts,
-        }),
-      );
+      return ctx.runMutation(this.component.subscriptions.record, {
+        testMode: this.options.testMode,
+        userId: args.userId,
+        subscription: {
+          endpoint: args.subscription.endpoint,
+          expirationTime: args.subscription.expirationTime,
+          keys: { p256dh: args.subscription.keys.p256dh, auth: args.subscription.keys.auth },
+        },
+        userAgent: args.userAgent,
+        allowedPushHosts: this.options.allowedPushHosts,
+      });
     },
 
     /** Remove a push subscription belonging to the user. */
     remove: (ctx: MutationContext, args: { endpoint: string; userId: string }) => {
-      return ctx.runMutation(
-        this.component.subscriptions.remove,
-        definedFields({
-          testMode: this.options.testMode,
-          endpoint: args.endpoint,
-          userId: args.userId,
-        }),
-      );
+      return ctx.runMutation(this.component.subscriptions.remove, {
+        testMode: this.options.testMode,
+        endpoint: args.endpoint,
+        userId: args.userId,
+      });
     },
 
     /** Remove the user’s subscriptions while preserving later registrations. */
     removeAll: (ctx: MutationContext, args: { userId: string }) => {
-      return ctx.runMutation(
-        this.component.subscriptions.removeAll,
-        definedFields({ testMode: this.options.testMode, userId: args.userId }),
-      );
+      return ctx.runMutation(this.component.subscriptions.removeAll, {
+        testMode: this.options.testMode,
+        userId: args.userId,
+      });
     },
 
     /** Read the user’s active and paused subscription counts. */
     getStatus: (ctx: QueryContext, args: { userId: string }) => {
-      return ctx.runQuery(
-        this.component.subscriptions.getStatus,
-        definedFields({ testMode: this.options.testMode, userId: args.userId }),
-      );
+      return ctx.runQuery(this.component.subscriptions.getStatus, {
+        testMode: this.options.testMode,
+        userId: args.userId,
+      });
     },
 
     /** Pause the user’s active subscriptions. */
     pause: (ctx: MutationContext, args: { userId: string }) => {
-      return ctx.runMutation(
-        this.component.subscriptions.pause,
-        definedFields({ testMode: this.options.testMode, userId: args.userId }),
-      );
+      return ctx.runMutation(this.component.subscriptions.pause, {
+        testMode: this.options.testMode,
+        userId: args.userId,
+      });
     },
 
     /** Resume the user’s paused subscriptions. */
     resume: (ctx: MutationContext, args: { userId: string }) => {
-      return ctx.runMutation(
-        this.component.subscriptions.resume,
-        definedFields({ testMode: this.options.testMode, userId: args.userId }),
-      );
-    },
-
-    /** Read the configured application server public key for subscribing. */
-    readApplicationServerKey: (ctx: QueryContext, _args: Record<string, never>) => {
-      return ctx.runQuery(
-        this.component.subscriptions.readApplicationServerKey,
-        definedFields({ testMode: this.options.testMode }),
-      );
+      return ctx.runMutation(this.component.subscriptions.resume, {
+        testMode: this.options.testMode,
+        userId: args.userId,
+      });
     },
   };
 
+  /** Sends, reads and lists push notifications and notification batches. */
   readonly notifications = {
     /** Enqueue a displayed notification for the user’s active subscriptions. */
     send: async (
@@ -181,21 +175,18 @@ export class WebPush {
         args,
         this.options.onNotificationComplete,
       );
-      return ctx.runMutation(
-        this.component.notifications.send,
-        definedFields({
-          userId: args.userId,
-          payload: fields.payload,
-          payloadEncoding: fields.payloadEncoding,
-          ttlSeconds: fields.ttlSeconds,
-          urgency: fields.urgency,
-          topic: fields.topic,
-          idempotencyKey: fields.idempotencyKey,
-          onComplete: fields.onComplete,
-          testMode: fields.testMode,
-          allowedPushHosts: fields.allowedPushHosts,
-        }),
-      );
+      return ctx.runMutation(this.component.notifications.send, {
+        userId: args.userId,
+        payload: fields.payload,
+        payloadEncoding: fields.payloadEncoding,
+        ttlSeconds: fields.ttlSeconds,
+        urgency: fields.urgency,
+        topic: fields.topic,
+        idempotencyKey: fields.idempotencyKey,
+        onComplete: fields.onComplete,
+        testMode: fields.testMode,
+        allowedPushHosts: fields.allowedPushHosts,
+      });
     },
 
     /** Enqueue a notification for each supplied user in bounded batches. */
@@ -212,21 +203,18 @@ export class WebPush {
         args,
         this.options.onBatchComplete,
       );
-      return ctx.runMutation(
-        this.component.notifications.sendBatch,
-        definedFields({
-          userIds: args.userIds,
-          payload: fields.payload,
-          payloadEncoding: fields.payloadEncoding,
-          ttlSeconds: fields.ttlSeconds,
-          urgency: fields.urgency,
-          topic: fields.topic,
-          idempotencyKey: fields.idempotencyKey,
-          onComplete: fields.onComplete,
-          testMode: fields.testMode,
-          allowedPushHosts: fields.allowedPushHosts,
-        }),
-      );
+      return ctx.runMutation(this.component.notifications.sendBatch, {
+        userIds: args.userIds,
+        payload: fields.payload,
+        payloadEncoding: fields.payloadEncoding,
+        ttlSeconds: fields.ttlSeconds,
+        urgency: fields.urgency,
+        topic: fields.topic,
+        idempotencyKey: fields.idempotencyKey,
+        onComplete: fields.onComplete,
+        testMode: fields.testMode,
+        allowedPushHosts: fields.allowedPushHosts,
+      });
     },
 
     /** Enqueue a raw push message for a custom service worker. */
@@ -248,82 +236,73 @@ export class WebPush {
         this.options.onNotificationComplete,
         encoding,
       );
-      return ctx.runMutation(
-        this.component.notifications.send,
-        definedFields({
-          userId: args.userId,
-          payload: fields.payload,
-          payloadEncoding: fields.payloadEncoding,
-          ttlSeconds: fields.ttlSeconds,
-          urgency: fields.urgency,
-          topic: fields.topic,
-          idempotencyKey: fields.idempotencyKey,
-          onComplete: fields.onComplete,
-          testMode: fields.testMode,
-          allowedPushHosts: fields.allowedPushHosts,
-        }),
-      );
+      return ctx.runMutation(this.component.notifications.send, {
+        userId: args.userId,
+        payload: fields.payload,
+        payloadEncoding: fields.payloadEncoding,
+        ttlSeconds: fields.ttlSeconds,
+        urgency: fields.urgency,
+        topic: fields.topic,
+        idempotencyKey: fields.idempotencyKey,
+        onComplete: fields.onComplete,
+        testMode: fields.testMode,
+        allowedPushHosts: fields.allowedPushHosts,
+      });
     },
 
     /** Read a stored notification belonging to the user. */
     get: (ctx: QueryContext, args: { notificationId: NotificationId; userId: string }) => {
-      return ctx.runQuery(
-        this.component.notifications.get,
-        definedFields({
-          testMode: this.options.testMode,
-          notificationId: args.notificationId,
-          userId: args.userId,
-        }),
-      );
+      return ctx.runQuery(this.component.notifications.get, {
+        testMode: this.options.testMode,
+        notificationId: args.notificationId,
+        userId: args.userId,
+      });
     },
 
     /** Read the stored progress of a notification batch. */
     getBatch: (ctx: QueryContext, args: { batchId: string }) => {
-      return ctx.runQuery(
-        this.component.notifications.getBatch,
-        definedFields({ testMode: this.options.testMode, batchId: args.batchId }),
-      );
+      return ctx.runQuery(this.component.notifications.getBatch, {
+        testMode: this.options.testMode,
+        batchId: args.batchId,
+      });
     },
 
     /** List the user’s stored notifications newest first. */
     list: (ctx: QueryContext, args: { userId: string; paginationOpts: PaginationOptions }) => {
-      return ctx.runQuery(
-        this.component.notifications.list,
-        definedFields({
-          testMode: this.options.testMode,
-          userId: args.userId,
-          paginationOpts: {
-            numItems: args.paginationOpts.numItems,
-            cursor: args.paginationOpts.cursor,
-            endCursor: args.paginationOpts.endCursor,
-
-            maximumRowsRead: args.paginationOpts.maximumRowsRead,
-            maximumBytesRead: args.paginationOpts.maximumBytesRead,
-          },
-        }),
-      );
+      return ctx.runQuery(this.component.notifications.list, {
+        testMode: this.options.testMode,
+        userId: args.userId,
+        paginationOpts: {
+          numItems: args.paginationOpts.numItems,
+          cursor: args.paginationOpts.cursor,
+          endCursor: args.paginationOpts.endCursor,
+        },
+      });
     },
   };
 
+  /** Lists delivery attempts for a notification. */
   readonly deliveries = {
     /** List stored delivery attempts for the user’s notification. */
     list: (ctx: QueryContext, args: { notificationId: NotificationId; userId: string }) => {
-      return ctx.runQuery(
-        this.component.deliveries.list,
-        definedFields({
-          testMode: this.options.testMode,
-          notificationId: args.notificationId,
-          userId: args.userId,
-        }),
-      );
+      return ctx.runQuery(this.component.deliveries.list, {
+        testMode: this.options.testMode,
+        notificationId: args.notificationId,
+        userId: args.userId,
+      });
+    },
+  };
+
+  /** Reads the VAPID application server key and verifies the deployed configuration. */
+  readonly config = {
+    /** Read the application server public key that browsers pass when subscribing. */
+    get: (ctx: QueryContext) => {
+      return ctx.runQuery(this.component.config.get, { testMode: this.options.testMode });
     },
 
     /** Verify WebCrypto operations and the configured VAPID key pair without sending. */
-    verify: (ctx: ActionContext, _args: Record<string, never>) => {
-      return ctx.runAction(
-        this.component.deliveries.verify,
-        definedFields({ testMode: this.options.testMode }),
-      );
+    verify: (ctx: ActionContext) => {
+      return ctx.runAction(this.component.config.verify, { testMode: this.options.testMode });
     },
   };
 }
@@ -339,22 +318,13 @@ async function buildSendFields<
 ): Promise<SendFields> {
   return {
     payload,
-    ...(payloadEncoding !== undefined && { payloadEncoding }),
+    payloadEncoding,
     ttlSeconds: options.ttlSeconds,
     urgency: options.urgency,
-    ...(options?.topic !== undefined && { topic: options.topic }),
-    ...(options?.idempotencyKey !== undefined && { idempotencyKey: options.idempotencyKey }),
-    ...(onComplete !== undefined && {
-      onComplete: await createFunctionHandle(onComplete),
-    }),
-    ...(clientOptions.testMode !== undefined && { testMode: clientOptions.testMode }),
-    ...(clientOptions.allowedPushHosts !== undefined && {
-      allowedPushHosts: clientOptions.allowedPushHosts,
-    }),
+    topic: options.topic,
+    idempotencyKey: options.idempotencyKey,
+    onComplete: onComplete === undefined ? undefined : await createFunctionHandle(onComplete),
+    testMode: clientOptions.testMode,
+    allowedPushHosts: clientOptions.allowedPushHosts,
   };
-}
-
-function definedFields<T extends object>(fields: T): T {
-  for (const key in fields) if (fields[key] === undefined) delete fields[key];
-  return fields;
 }

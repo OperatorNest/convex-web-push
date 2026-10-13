@@ -4,8 +4,8 @@ import { parsePrivateKey, parsePublicKey, validateVapidSubject } from "./vapid.j
 
 export const DEFAULT_MAX_PARALLELISM = 10;
 
-/** Component environment values remain strings until configuration validation. */
-export type WebPushEnv = {
+/** Component env values the component reads; each stays an optional string until `readConfig` validates it. */
+export type ComponentEnv = {
   readonly WEB_PUSH_VAPID_PUBLIC_KEY?: string;
   readonly WEB_PUSH_VAPID_PRIVATE_KEY?: string;
   readonly WEB_PUSH_VAPID_SUBJECT?: string;
@@ -13,16 +13,16 @@ export type WebPushEnv = {
   readonly WEB_PUSH_MAX_PARALLELISM?: string;
 };
 
-/** Parsed configuration carries optional VAPID credentials, a test-mode decision and bounded parallelism. */
+/** Parsed configuration carries optional VAPID credentials and bounded parallelism. */
 export type WebPushConfig = {
   publicKey?: string;
   privateKey?: string;
   subject?: string;
-  testMode?: boolean;
   maxParallelism: number;
 };
 
-export function readConfig(env: WebPushEnv): WebPushConfig {
+/** Validates every supplied component env value; throws `WEB_PUSH_NOT_CONFIGURED` on any malformed value, and `requireVapidConfig` rejects missing VAPID values for live operations. */
+export function readConfig(env: ComponentEnv): WebPushConfig {
   const maxParallelism =
     env.WEB_PUSH_MAX_PARALLELISM === undefined
       ? DEFAULT_MAX_PARALLELISM
@@ -41,7 +41,6 @@ export function readConfig(env: WebPushEnv): WebPushConfig {
   )
     throw webPushError("WEB_PUSH_NOT_CONFIGURED");
   const config: WebPushConfig = { maxParallelism };
-  if (env.WEB_PUSH_TEST_MODE !== undefined) config.testMode = env.WEB_PUSH_TEST_MODE === "true";
   if (env.WEB_PUSH_VAPID_PUBLIC_KEY !== undefined) {
     const parsed = parsePublicKey(env.WEB_PUSH_VAPID_PUBLIC_KEY);
     if (!parsed.ok) throw webPushError("WEB_PUSH_NOT_CONFIGURED");
@@ -60,16 +59,12 @@ export function readConfig(env: WebPushEnv): WebPushConfig {
   return config;
 }
 
-export function isTestMode(
-  requested: boolean | undefined,
-  configured: boolean | undefined,
-): boolean {
-  if (requested !== undefined && typeof requested !== "boolean")
-    throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
-  if (requested === undefined && configured === undefined)
-    throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
-  return requested === true || configured === true;
+// shared-block:begin
+/** Returns true when the caller requests test mode or `WEB_PUSH_TEST_MODE` is `"true"`; the request can enable test mode and cannot disable it. */
+export function resolveTestMode(requested: boolean | undefined, env: ComponentEnv): boolean {
+  return requested === true || env.WEB_PUSH_TEST_MODE === "true";
 }
+// shared-block:end
 
 export function requireVapidConfig(config: WebPushConfig) {
   const { publicKey, privateKey, subject } = config;

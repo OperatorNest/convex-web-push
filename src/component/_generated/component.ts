@@ -23,6 +23,27 @@ import type { FunctionReference } from "convex/server";
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
+    config: {
+      get: FunctionReference<
+        "query",
+        "internal",
+        { testMode?: boolean },
+        { applicationServerKey: string | null },
+        Name
+      >;
+      verify: FunctionReference<
+        "action",
+        "internal",
+        { testMode?: boolean },
+        {
+          checks: Array<{ error?: string; name: string; ok: boolean }>;
+          config: { configured: boolean; problem?: string };
+          ok: boolean;
+          testMode: boolean;
+        },
+        Name
+      >;
+    };
     deliveries: {
       list: FunctionReference<
         "query",
@@ -52,7 +73,33 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             providerStatus?: number;
             retryable?: boolean;
           };
-          errorKind?: string;
+          errorKind?:
+            | "delivery_closed"
+            | "notification_missing"
+            | "subscription_removed"
+            | "reassigned"
+            | "subscription_gone"
+            | "subscription_expired"
+            | "subscription_paused"
+            | "ttl_expired"
+            | "vapid_not_configured"
+            | "vapid_key_mismatch"
+            | "invalid_vapid_key"
+            | "endpoint_not_allowed"
+            | "payload_too_large"
+            | "invalid_subscription_keys"
+            | "crypto_unsupported"
+            | "timeout"
+            | "network_error"
+            | "rate_limited"
+            | "server_error"
+            | "vapid_rejected"
+            | "unexpected_redirect"
+            | "bad_request"
+            | "invalid_result"
+            | "action_failed"
+            | "canceled"
+            | "max_attempts";
           notificationId: string;
           providerStatus?: number;
           retryAfterMs?: number;
@@ -63,18 +110,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           testMode: boolean;
           userId: string;
         }>,
-        Name
-      >;
-      verify: FunctionReference<
-        "action",
-        "internal",
-        { testMode?: boolean },
-        {
-          checks: Array<{ error?: string; name: string; ok: boolean }>;
-          config: { configured: boolean; problem?: string };
-          ok: boolean;
-          testMode: boolean;
-        },
         Name
       >;
     };
@@ -227,7 +262,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { testMode?: boolean; userId: string },
-        { lastSuccessAt?: number; paused: number; subscriptions: number },
+        { activeCount: number; lastSuccessAt?: number; pausedCount: number },
         Name
       >;
       pause: FunctionReference<
@@ -235,13 +270,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { testMode?: boolean; userId: string },
         number,
-        Name
-      >;
-      readApplicationServerKey: FunctionReference<
-        "query",
-        "internal",
-        { testMode?: boolean },
-        string | null,
         Name
       >;
       record: FunctionReference<

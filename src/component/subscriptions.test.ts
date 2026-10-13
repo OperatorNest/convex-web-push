@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import {
+  type TestCtx,
   configureVapid,
   drain,
+  expectWebPushError,
   makeSubscription,
   required,
-  setupTest,
-  type TestCtx,
+  setupLiveTest,
+  setupSimulatedTest,
 } from "../test-helpers.js";
 import { base64urlEncode } from "../shared/base64url.js";
 
@@ -25,11 +27,11 @@ async function subscribe(t: TestCtx, userId: string) {
 
 const liveCount = async (t: TestCtx, userId: string) => {
   const s = await t.query(api.subscriptions.getStatus, { userId });
-  return s.subscriptions + s.paused;
+  return s.activeCount + s.pausedCount;
 };
 
 test("records a subscription and upserts by endpoint", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription("updates.push.services.mozilla.com");
   const first = await t.mutation(api.subscriptions.record, {
     userId: "u1",
@@ -51,7 +53,7 @@ test("records a subscription and upserts by endpoint", async () => {
 
 test("fingerprints the configured VAPID public key", async () => {
   const keys = await configureVapid();
-  const t = setupTest({ testMode: false });
+  const t = setupLiveTest();
   const { subscription } = await makeSubscription();
   await t.mutation(api.subscriptions.record, { userId: "u1", subscription });
   const row = await t.run((ctx) => ctx.db.query("subscriptions").first());
@@ -60,17 +62,17 @@ test("fingerprints the configured VAPID public key", async () => {
 });
 
 test("reassigns an endpoint that moves to another user", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   await t.mutation(api.subscriptions.record, { userId: "alice", subscription });
   await t.mutation(api.subscriptions.record, { userId: "bob", subscription });
-  expect((await t.query(api.subscriptions.getStatus, { userId: "alice" })).subscriptions).toBe(0);
-  expect((await t.query(api.subscriptions.getStatus, { userId: "bob" })).subscriptions).toBe(1);
+  expect((await t.query(api.subscriptions.getStatus, { userId: "alice" })).activeCount).toBe(0);
+  expect((await t.query(api.subscriptions.getStatus, { userId: "bob" })).activeCount).toBe(1);
 });
 
 test("pausing and removing test subscriptions preserves live subscriptions at the same endpoint", async () => {
   await configureVapid();
-  const t = setupTest({ testMode: false });
+  const t = setupLiveTest();
   const { subscription } = await makeSubscription();
   const live = await t.mutation(api.subscriptions.record, {
     userId: "alice",
@@ -87,14 +89,14 @@ test("pausing and removing test subscriptions preserves live subscriptions at th
   expect(
     await t.query(api.subscriptions.getStatus, { userId: "alice", testMode: true }),
   ).toMatchObject({
-    subscriptions: 0,
-    paused: 1,
+    activeCount: 0,
+    pausedCount: 1,
   });
   expect(
     await t.query(api.subscriptions.getStatus, { userId: "alice", testMode: false }),
   ).toMatchObject({
-    subscriptions: 1,
-    paused: 0,
+    activeCount: 1,
+    pausedCount: 0,
   });
   await t.mutation(api.subscriptions.removeAll, { userId: "alice", testMode: true });
   await drain(t);
@@ -106,37 +108,43 @@ test("pausing and removing test subscriptions preserves live subscriptions at th
 });
 
 test("rejects malformed subscriptions and disallowed endpoints", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   const record = (patch: object) =>
     t.mutation(api.subscriptions.record, {
       userId: "u1",
       subscription: { ...subscription, ...patch },
     });
-  await expect(record({ endpoint: "https://evil.example.com/x" })).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_INVALID_ARGUMENT" },
-  });
-  await expect(record({ endpoint: "http://fcm.googleapis.com/x" })).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_INVALID_ARGUMENT" },
-  });
-  await expect(record({ keys: { ...subscription.keys, p256dh: "AAAA" } })).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_INVALID_ARGUMENT" },
-  });
-  await expect(record({ keys: { ...subscription.keys, auth: "AAAA" } })).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_INVALID_ARGUMENT" },
-  });
-  await expect(record({ keys: { ...subscription.keys, auth: "***" } })).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_INVALID_ARGUMENT" },
-  });
+  await expectWebPushError(
+    record({ endpoint: "https://evil.example.com/x" }),
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+  await expectWebPushError(
+    record({ endpoint: "http://fcm.googleapis.com/x" }),
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+  await expectWebPushError(
+    record({ keys: { ...subscription.keys, p256dh: "AAAA" } }),
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+  await expectWebPushError(
+    record({ keys: { ...subscription.keys, auth: "AAAA" } }),
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+  await expectWebPushError(
+    record({ keys: { ...subscription.keys, auth: "***" } }),
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
   expect(await t.run((ctx) => ctx.db.query("subscriptions").take(10000))).toHaveLength(0);
 });
 
 test("allowedPushHosts extends the endpoint allowlist", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription("push.example.test");
-  await expect(
+  await expectWebPushError(
     t.mutation(api.subscriptions.record, { userId: "u1", subscription }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
   await expect(
     t.mutation(api.subscriptions.record, {
       userId: "u1",
@@ -147,7 +155,7 @@ test("allowedPushHosts extends the endpoint allowlist", async () => {
 });
 
 test("remove deletes by endpoint and reports whether it existed", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   await t.mutation(api.subscriptions.record, { userId: "u1", subscription });
   expect(
@@ -159,7 +167,7 @@ test("remove deletes by endpoint and reports whether it existed", async () => {
 });
 
 test("removeAll removes every subscription of that user only", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   for (const userId of ["u1", "u1", "u2"]) {
     const { subscription } = await makeSubscription();
     await t.mutation(api.subscriptions.record, { userId, subscription });
@@ -168,27 +176,27 @@ test("removeAll removes every subscription of that user only", async () => {
     removed: 2,
     done: true,
   });
-  expect((await t.query(api.subscriptions.getStatus, { userId: "u2" })).subscriptions).toBe(1);
+  expect((await t.query(api.subscriptions.getStatus, { userId: "u2" })).activeCount).toBe(1);
 });
 
 test("pause and resume move subscriptions between states", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   await t.mutation(api.subscriptions.record, { userId: "u1", subscription });
   expect(await t.mutation(api.subscriptions.pause, { userId: "u1" })).toBe(1);
   expect(await t.query(api.subscriptions.getStatus, { userId: "u1" })).toMatchObject({
-    subscriptions: 0,
-    paused: 1,
+    activeCount: 0,
+    pausedCount: 1,
   });
 
   await t.mutation(api.subscriptions.record, { userId: "u1", subscription });
-  expect((await t.query(api.subscriptions.getStatus, { userId: "u1" })).paused).toBe(1);
+  expect((await t.query(api.subscriptions.getStatus, { userId: "u1" })).pausedCount).toBe(1);
   expect(await t.mutation(api.subscriptions.resume, { userId: "u1" })).toBe(1);
-  expect((await t.query(api.subscriptions.getStatus, { userId: "u1" })).subscriptions).toBe(1);
+  expect((await t.query(api.subscriptions.getStatus, { userId: "u1" })).activeCount).toBe(1);
 });
 
 test("re-recording a gone subscription reactivates it", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   const { subscriptionId } = await t.mutation(api.subscriptions.record, {
     userId: "u1",
@@ -203,14 +211,14 @@ test("re-recording a gone subscription reactivates it", async () => {
 });
 
 test("keeps at most 50 live subscriptions per user by retiring the oldest", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const endpoints: string[] = [];
   for (let i = 0; i < 51; i++) {
     const { subscription } = await makeSubscription();
     endpoints.push(subscription.endpoint);
     await t.mutation(api.subscriptions.record, { userId: "u1", subscription });
   }
-  expect((await t.query(api.subscriptions.getStatus, { userId: "u1" })).subscriptions).toBe(50);
+  expect((await t.query(api.subscriptions.getStatus, { userId: "u1" })).activeCount).toBe(50);
   const oldest = await t.run((ctx) =>
     ctx.db
       .query("subscriptions")
@@ -218,20 +226,11 @@ test("keeps at most 50 live subscriptions per user by retiring the oldest", asyn
       .take(5),
   );
   expect(oldest).toHaveLength(1);
-  expect(required(oldest[0]).endpoint).toBe(endpoints[0]);
-});
-
-test("getPublicKey returns the configured public key only", async () => {
-  const t = setupTest({ testMode: false });
-  expect(await t.query(api.subscriptions.readApplicationServerKey, { testMode: true })).toBeNull();
-  const keys = await configureVapid();
-  expect(await t.query(api.subscriptions.readApplicationServerKey, { testMode: true })).toBe(
-    keys.publicKey,
-  );
+  expect(required(oldest[0], "the oldest subscription").endpoint).toBe(endpoints[0]);
 });
 
 test("re-recording a gone endpoint respects the subscription cap", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const first = await makeSubscription();
   await t.mutation(api.subscriptions.record, { userId: "u1", subscription: first.subscription });
   for (let i = 0; i < 50; i++) await subscribe(t, "u1");
@@ -241,7 +240,7 @@ test("re-recording a gone endpoint respects the subscription cap", async () => {
 });
 
 test("paused subscriptions count toward the cap", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   for (let i = 0; i < 50; i++) await subscribe(t, "u1");
   await t.mutation(api.subscriptions.pause, { userId: "u1" });
   await subscribe(t, "u1");
@@ -249,7 +248,7 @@ test("paused subscriptions count toward the cap", async () => {
 });
 
 test("an endpoint moving to a user at the cap does not exceed it", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   for (let i = 0; i < 50; i++) await subscribe(t, "bob");
   const alice = await subscribe(t, "alice");
   await t.mutation(api.subscriptions.record, { userId: "bob", subscription: alice.subscription });
@@ -257,7 +256,7 @@ test("an endpoint moving to a user at the cap does not exceed it", async () => {
 });
 
 test("removeAll removes more than one batch through scheduled continuations", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   for (let i = 0; i < 151; i++) await subscribe(t, "u1");
   await subscribe(t, "other");
   const first = await t.mutation(api.subscriptions.removeAll, { userId: "u1" });
@@ -268,7 +267,7 @@ test("removeAll removes more than one batch through scheduled continuations", as
 });
 
 test("remove with a userId only removes that user's subscription", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await subscribe(t, "alice");
   expect(
     await t.mutation(api.subscriptions.remove, { endpoint: subscription.endpoint, userId: "bob" }),
@@ -283,28 +282,34 @@ test("remove with a userId only removes that user's subscription", async () => {
 });
 
 test("re-subscribing replaces the expiration and user agent", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   await t.mutation(api.subscriptions.record, {
     userId: "u1",
     subscription: { ...subscription, expirationTime: Date.now() + 60_000 },
     userAgent: "Old".repeat(200),
   });
-  const row = required(await t.run((ctx) => ctx.db.query("subscriptions").first()));
+  const row = required(
+    await t.run((ctx) => ctx.db.query("subscriptions").first()),
+    "a subscription row",
+  );
   expect(row.expirationTime).toBeTypeOf("number");
   expect(row.userAgent).toHaveLength(256);
   await t.mutation(api.subscriptions.record, { userId: "u1", subscription });
-  const updated = required(await t.run((ctx) => ctx.db.get("subscriptions", row._id)));
+  const updated = required(
+    await t.run((ctx) => ctx.db.get("subscriptions", row._id)),
+    "the updated subscription row",
+  );
   expect(updated.expirationTime).toBeUndefined();
   expect(updated.userAgent).toBeUndefined();
 });
 
 test("registration rejects a 65-byte value outside P-256", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   const point = new Uint8Array(65);
   point[0] = 4;
-  await expect(
+  await expectWebPushError(
     t.mutation(api.subscriptions.record, {
       userId: "u",
       subscription: {
@@ -312,23 +317,27 @@ test("registration rejects a 65-byte value outside P-256", async () => {
         keys: { ...subscription.keys, p256dh: base64urlEncode(point) },
       },
     }),
-  ).rejects.toMatchObject({ data: { code: "WEB_PUSH_INVALID_ARGUMENT" } });
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
 });
 
 test("registration truncates userAgent without splitting an emoji", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   const result = await t.mutation(api.subscriptions.record, {
     userId: "u",
     subscription,
     userAgent: "a".repeat(255) + "😀",
   });
-  const row = required(await t.run((ctx) => ctx.db.get("subscriptions", result.subscriptionId)));
+  const row = required(
+    await t.run((ctx) => ctx.db.get("subscriptions", result.subscriptionId)),
+    "the subscription row",
+  );
   expect(row.userAgent).toBe("a".repeat(255));
 });
 
 test("purge continuations preserve subscriptions recorded after removal began", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   for (let i = 0; i < 101; i++)
     await t.mutation(api.subscriptions.record, {
@@ -342,7 +351,7 @@ test("purge continuations preserve subscriptions recorded after removal began", 
 });
 
 test("removal accepts every Unicode endpoint admitted by registration", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   subscription.endpoint += "é".repeat(3000);
   await t.mutation(api.subscriptions.record, { userId: "u", subscription });
@@ -352,7 +361,7 @@ test("removal accepts every Unicode endpoint admitted by registration", async ()
 });
 
 test("subscription removal requires an owner", async () => {
-  const t = setupTest();
+  const t = setupSimulatedTest();
   const { subscription } = await makeSubscription();
   const saved = await t.mutation(api.subscriptions.record, { userId: "alice", subscription });
   await expect(

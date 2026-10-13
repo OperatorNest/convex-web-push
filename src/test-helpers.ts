@@ -1,29 +1,75 @@
 import { register as registerWorkpool } from "@convex-dev/workpool/test";
 import { convexTest } from "convex-test";
 import { expect, vi } from "vitest";
-import { base64urlEncode, concatBytes, utf8Encode } from "./shared/base64url.js";
-import { isWebPushError, type WebPushErrorCode } from "./shared/errors.js";
-import { generateVapidKeys } from "./shared/vapid.js";
 import schema from "./component/schema.js";
+import { isWebPushError, type WebPushErrorCode } from "./shared/errors.js";
+import { base64urlEncode, concatBytes, utf8Encode } from "./shared/base64url.js";
+import { generateVapidKeys } from "./shared/vapid.js";
 
-const modules = import.meta.glob(["./component/**/*.ts", "!./component/**/*.test.ts"]);
-
-/** Test setup options select simulated or stubbed-provider execution. */
-export type SetupOptions = {
-  testMode?: boolean;
+// shared-block:begin
+type GlobImportMeta = ImportMeta & {
+  glob: (patterns: string[]) => Record<string, () => Promise<unknown>>;
 };
+const modules = (import.meta as GlobImportMeta).glob([
+  "./component/**/*.ts",
+  "!./component/**/*.test.ts",
+]);
 
-export function setupTest(options: SetupOptions = {}) {
-  vi.stubEnv("WEB_PUSH_TEST_MODE", options.testMode === false ? "false" : "true");
+export function setupTest() {
   const t = convexTest(schema, modules);
   registerWorkpool(t, "workpool");
   return t;
 }
 
-/** The component test context runs registered functions against the in-memory database. */
 export type TestCtx = ReturnType<typeof setupTest>;
 
-export async function configureVapid(subject = "mailto:ops@example.com") {
+export async function drain(t: Pick<TestCtx, "finishAllScheduledFunctions">): Promise<void> {
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+}
+
+export function required<T>(value: T | null | undefined, what: string): T {
+  if (value === null || value === undefined) throw new Error(`Expected ${what} to exist`);
+  return value;
+}
+
+export type FetchCall = { url: string; init: RequestInit };
+
+export function stubFetch(
+  respond: (call: FetchCall, index: number) => Response | Promise<Response>,
+): FetchCall[] {
+  const calls: FetchCall[] = [];
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const call = { url: input instanceof Request ? input.url : String(input), init };
+    calls.push(call);
+    return respond(call, calls.length - 1);
+  });
+  return calls;
+}
+
+export async function expectWebPushError(
+  promise: Promise<unknown>,
+  code: WebPushErrorCode,
+): Promise<void> {
+  const error = await promise.then(
+    () => undefined,
+    (caught: unknown) => caught,
+  );
+  expect(isWebPushError(error), String(error)).toBe(true);
+  if (isWebPushError(error)) expect(error.data.code).toBe(code);
+}
+// shared-block:end
+
+export function setupSimulatedTest() {
+  vi.stubEnv("WEB_PUSH_TEST_MODE", "true");
+  return setupTest();
+}
+
+export function setupLiveTest() {
+  vi.stubEnv("WEB_PUSH_TEST_MODE", "false");
+  return setupTest();
+}
+
+export async function configureVapid(subject = "mailto:ops@acme.dev") {
   const keys = await generateVapidKeys();
   vi.stubEnv("WEB_PUSH_VAPID_PUBLIC_KEY", keys.publicKey);
   vi.stubEnv("WEB_PUSH_VAPID_PRIVATE_KEY", keys.privateKey);
@@ -48,12 +94,6 @@ export async function makeSubscription(host = "fcm.googleapis.com", path = "/fcm
     uaPublic,
     authSecret,
   };
-}
-
-export async function drain(t: {
-  finishAllScheduledFunctions(advanceTimers: () => void): Promise<void>;
-}) {
-  await t.finishAllScheduledFunctions(vi.runAllTimers);
 }
 
 async function hkdf(secret: Uint8Array, salt: Uint8Array, info: Uint8Array, bits: number) {
@@ -105,44 +145,22 @@ export async function decryptAes128gcm(
   return record.slice(0, end - 1);
 }
 
-export function required<T>(value: T | null | undefined, what = "value"): T {
-  if (value === null || value === undefined) throw new Error(`Expected ${what} to exist`);
-  return value;
-}
-
-export function stubFetch(...responders: (() => Response | Promise<Response>)[]) {
-  let call = 0;
-  const calls: { time: number; url: URL; init: RequestInit }[] = [];
-  const mock = vi.fn(async (url: URL, init: RequestInit) => {
-    calls.push({ time: Date.now(), url, init });
-    const responder = required(responders[Math.min(call++, responders.length - 1)], "a responder");
-    return responder();
-  });
-  vi.stubGlobal("fetch", mock);
-  return {
-    mock,
-    calls,
-
-    headers: (n = 0) => new Headers(required(calls[n], `fetch call ${n}`).init.headers),
-
-    body(n = 0) {
-      const body = required(calls[n], `fetch call ${n}`).init.body;
-      return body instanceof Uint8Array ? body : null;
-    },
-  };
-}
-
 export const respond = (status: number, headers?: Record<string, string>) => () =>
   new Response(status === 201 ? null : "push pushService says no", {
     status,
     ...(headers !== undefined && { headers }),
   });
 
-export async function expectWebPushError(promise: Promise<unknown>, code: WebPushErrorCode) {
-  const error = await promise.then(
-    () => undefined,
-    (e: unknown) => e,
-  );
-  expect(isWebPushError(error), String(error)).toBe(true);
-  if (isWebPushError(error)) expect(error.data.code).toBe(code);
+export function respondInOrder(...responders: (() => Response)[]) {
+  return (_call: FetchCall, index: number) =>
+    required(responders[Math.min(index, responders.length - 1)], "a responder")();
+}
+
+export function requestHeaders(calls: readonly FetchCall[], index = 0): Headers {
+  return new Headers(required(calls[index], `fetch call ${index}`).init.headers);
+}
+
+export function requestBody(calls: readonly FetchCall[], index = 0): Uint8Array | null {
+  const body = required(calls[index], `fetch call ${index}`).init.body;
+  return body instanceof Uint8Array ? body : null;
 }

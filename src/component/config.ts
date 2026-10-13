@@ -1,57 +1,71 @@
 import { v } from "convex/values";
 import { base64urlDecode, base64urlEncode, bytesEqual, utf8Encode } from "../shared/base64url.js";
 import { encryptAes128gcmWithFixedKeys } from "../shared/encrypt.js";
+import { isWebPushError, webPushError } from "../shared/errors.js";
+import { readConfig, requireVapidConfig, resolveTestMode } from "../shared/config.js";
 import { sha256Hex } from "../shared/sha256.js";
-import { RFC8291_VECTOR } from "../shared/vectors.js";
-import { webPushError } from "../shared/errors.js";
-import { readConfig, requireVapidConfig, isTestMode } from "../shared/config.js";
 import {
   generateVapidKeys,
   importVapidPrivateKey,
   signVapidJwt,
   verifyVapidJwt,
 } from "../shared/vapid.js";
-import { env, type ActionCtx } from "./_generated/server.js";
+import { RFC8291_VECTOR } from "../shared/vectors.js";
+import { action, env, query } from "./_generated/server.js";
 
-const vCheck = v.object({ name: v.string(), ok: v.boolean(), error: v.optional(v.string()) });
+const configCheckValidator = v.object({
+  name: v.string(),
+  ok: v.boolean(),
+  error: v.optional(v.string()),
+});
 
-async function check(name: string, fn: () => Promise<void>) {
+async function check(name: string, run: () => Promise<void>) {
   try {
-    await fn();
+    await run();
     return { name, ok: true };
-  } catch {
-    return { name, ok: false, error: webPushError("WEB_PUSH_CRYPTO_UNSUPPORTED").data.message };
+  } catch (error) {
+    const failure = isWebPushError(error) ? error : webPushError("WEB_PUSH_CRYPTO_UNSUPPORTED");
+    return { name, ok: false, error: failure.data.message };
   }
 }
 
-function assert(condition: boolean, message: string): asserts condition {
-  if (!condition) throw new Error(message);
+function requireCrypto(condition: boolean): asserts condition {
+  if (!condition) throw webPushError("WEB_PUSH_CRYPTO_UNSUPPORTED");
 }
 
-export const verificationDefinition = {
+export const get = query({
+  args: { testMode: v.optional(v.boolean()) },
+  returns: v.object({ applicationServerKey: v.union(v.string(), v.null()) }),
+  handler: (_ctx, args) => {
+    const config = readConfig(env);
+    if (!resolveTestMode(args.testMode, env)) requireVapidConfig(config);
+    return { applicationServerKey: config.publicKey ?? null };
+  },
+});
+
+export const verify = action({
   args: { testMode: v.optional(v.boolean()) },
   returns: v.object({
     ok: v.boolean(),
     testMode: v.boolean(),
-
     config: v.object({ configured: v.boolean(), problem: v.optional(v.string()) }),
-    checks: v.array(vCheck),
+    checks: v.array(configCheckValidator),
   }),
-  handler: async (_ctx: ActionCtx, args: { testMode?: boolean }) => {
+  handler: async (_ctx, args) => {
     const parsed = readConfig(env);
-    const testMode = isTestMode(args.testMode, parsed.testMode);
+    const testMode = resolveTestMode(args.testMode, env);
     if (!testMode) requireVapidConfig(parsed);
-    const config =
+    const configured =
       parsed.publicKey !== undefined &&
       parsed.privateKey !== undefined &&
-      parsed.subject !== undefined
-        ? requireVapidConfig(parsed)
-        : undefined;
+      parsed.subject !== undefined;
+    if (parsed.publicKey !== undefined && parsed.privateKey !== undefined)
+      await importVapidPrivateKey(parsed.publicKey, parsed.privateKey);
     const checks = [
       await check("sha256 digest", async () => {
         const digest = await crypto.subtle.digest("SHA-256", utf8Encode("abc"));
-        assert(base64urlEncode(new Uint8Array(digest)).length === 43, "unexpected digest size");
-        assert(sha256Hex("abc").startsWith("ba7816bf"), "sync sha256 mismatch");
+        requireCrypto(base64urlEncode(new Uint8Array(digest)).length === 43);
+        requireCrypto(sha256Hex("abc").startsWith("ba7816bf"));
       }),
       await check("ECDH P-256 key agreement", async () => {
         const params = { name: "ECDH", namedCurve: "P-256" } as const;
@@ -67,7 +81,7 @@ export const verificationDefinition = {
           b.privateKey,
           256,
         );
-        assert(bytesEqual(new Uint8Array(ab), new Uint8Array(ba)), "ECDH secrets differ");
+        requireCrypto(bytesEqual(new Uint8Array(ab), new Uint8Array(ba)));
       }),
       await check("RFC 8291 Appendix A vector", async () => {
         const body = await encryptAes128gcmWithFixedKeys(
@@ -84,10 +98,7 @@ export const verificationDefinition = {
             salt: base64urlDecode(RFC8291_VECTOR.salt),
           },
         );
-        assert(
-          bytesEqual(body, base64urlDecode(RFC8291_VECTOR.body)),
-          "encrypted body differs from the RFC",
-        );
+        requireCrypto(bytesEqual(body, base64urlDecode(RFC8291_VECTOR.body)));
       }),
       await check("VAPID ES256 sign and verify", async () => {
         const keys = await generateVapidKeys();
@@ -97,37 +108,16 @@ export const verificationDefinition = {
           subject: "mailto:test@example.com",
           privateKey: key,
         });
-        assert((await verifyVapidJwt(jwt, keys.publicKey)) !== null, "signature did not verify");
+        requireCrypto((await verifyVapidJwt(jwt, keys.publicKey)) !== null);
       }),
     ];
-
-    if (config) {
-      const { publicKey, privateKey } = config;
-      checks.push(
-        await check("configured VAPID key pair matches", async () => {
-          const key = await importVapidPrivateKey(publicKey, privateKey);
-          const jwt = await signVapidJwt({
-            audience: "https://push.example.com",
-            subject: "mailto:test@example.com",
-            privateKey: key,
-          });
-          assert(
-            (await verifyVapidJwt(jwt, publicKey)) !== null,
-            "WEB_PUSH_VAPID_PUBLIC_KEY does not match WEB_PUSH_VAPID_PRIVATE_KEY",
-          );
-        }),
-      );
-    }
     return {
       ok: checks.every((c) => c.ok),
       testMode,
-      config: config
+      config: configured
         ? { configured: true }
-        : {
-            configured: false,
-            problem: webPushError("WEB_PUSH_NOT_CONFIGURED").data.message,
-          },
+        : { configured: false, problem: webPushError("WEB_PUSH_NOT_CONFIGURED").data.message },
       checks,
     };
   },
-};
+});

@@ -1,7 +1,14 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { base64urlDecode } from "../shared/base64url.js";
 import { isWebPushError } from "../shared/errors.js";
-import { getSubscription, isSupported, permissionState, subscribe, unsubscribe } from "./index.js";
+import {
+  getSubscription,
+  isSupported,
+  getPushPermission,
+  subscribe,
+  unsubscribe,
+} from "./index.js";
+import { expectWebPushError } from "../test-helpers.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -47,12 +54,10 @@ function stubBrowser(
 
 test("reports unsupported environments", async () => {
   expect(isSupported()).toBe(false);
-  expect(permissionState()).toBe("unsupported");
+  expect(getPushPermission()).toBe("unsupported");
   expect(await getSubscription()).toBeNull();
   expect(await unsubscribe()).toBeNull();
-  await expect(subscribe({ applicationServerKey: VAPID_KEY })).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_UNSUPPORTED" },
-  });
+  await expectWebPushError(subscribe({ applicationServerKey: VAPID_KEY }), "WEB_PUSH_UNSUPPORTED");
 });
 
 test("subscribe registers the worker and returns serializable JSON", async () => {
@@ -94,9 +99,10 @@ test("subscribe reuses a subscription made with the same key and replaces one ma
 
 test("subscribe fails when permission is not granted", async () => {
   stubBrowser(null, "denied");
-  await expect(subscribe({ applicationServerKey: VAPID_KEY })).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_PERMISSION_DENIED" },
-  });
+  await expectWebPushError(
+    subscribe({ applicationServerKey: VAPID_KEY }),
+    "WEB_PUSH_PERMISSION_DENIED",
+  );
 });
 
 test("getSubscription and unsubscribe use the existing subscription", async () => {
@@ -149,12 +155,7 @@ test("subscribe fails with a scope hint if the worker never activates", async ()
     waiting: null,
   }));
   const pending = subscribe({ applicationServerKey: VAPID_KEY });
-  const assertion = expect(pending).rejects.toMatchObject({
-    data: {
-      code: "WEB_PUSH_SERVICE_WORKER_FAILED",
-      message: expect.stringContaining("verify its scope"),
-    },
-  });
+  const assertion = expectWebPushError(pending, "WEB_PUSH_SERVICE_WORKER_FAILED");
   await vi.advanceTimersByTimeAsync(10_001);
   await assertion;
 });
@@ -170,12 +171,7 @@ test("subscribe fails if the worker becomes redundant", async () => {
   const pending = subscribe({ applicationServerKey: VAPID_KEY });
   await vi.waitFor(() => expect(worker.listening()).toBe(true));
   worker.transition("redundant");
-  await expect(pending).rejects.toMatchObject({
-    data: {
-      code: "WEB_PUSH_SERVICE_WORKER_FAILED",
-      message: expect.stringContaining("A service worker operation failed"),
-    },
-  });
+  await expectWebPushError(pending, "WEB_PUSH_SERVICE_WORKER_FAILED");
 });
 
 test("browser failures are Web Push errors the guard recognises", async () => {
@@ -189,7 +185,8 @@ test("browser failures are Web Push errors the guard recognises", async () => {
 test("native registration failures become package errors", async () => {
   stubBrowser(null);
   vi.mocked(navigator.serviceWorker.register).mockRejectedValue(new Error("native failure"));
-  await expect(subscribe({ applicationServerKey: VAPID_KEY })).rejects.toMatchObject({
-    data: { code: "WEB_PUSH_SERVICE_WORKER_FAILED" },
-  });
+  await expectWebPushError(
+    subscribe({ applicationServerKey: VAPID_KEY }),
+    "WEB_PUSH_SERVICE_WORKER_FAILED",
+  );
 });

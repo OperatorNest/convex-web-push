@@ -1,14 +1,14 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
+const packageName = "@operatornest/convex-web-push";
 const src = (path) => fileURLToPath(new URL(`./src/${path}`, import.meta.url));
 
 export default defineConfig({
   resolve: {
-    // Example and client tests run the package from source, so coverage counts src/client.
     alias: [
-      { find: /^@operatornest\/convex-web-push\/test$/, replacement: src("test.ts") },
-      { find: /^@operatornest\/convex-web-push$/, replacement: src("client/index.ts") },
+      { find: new RegExp(`^${packageName}/test$`), replacement: src("test.ts") },
+      { find: new RegExp(`^${packageName}$`), replacement: src("client/index.ts") },
     ],
   },
   test: {
@@ -20,8 +20,11 @@ export default defineConfig({
         "**/_generated/**",
         "**/*.test.ts",
         "**/*.d.ts",
+        "**/fixtures/**",
         "src/test.ts",
         "src/test-helpers.ts",
+        "src/component/convex.config.ts",
+        "src/component/crons.ts",
       ],
       thresholds: { statements: 90, branches: 85 },
     },

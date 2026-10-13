@@ -1,7 +1,8 @@
 import {
-  vWebPushBatchCompleteArgs,
-  vWebPushNotificationCompleteArgs,
-  vPushSubscription,
+  deliveryErrorKindValidator,
+  webPushBatchCompleteArgsValidator,
+  webPushNotificationCompleteArgsValidator,
+  pushSubscriptionValidator,
   WebPush,
 } from "@operatornest/convex-web-push";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
@@ -15,26 +16,26 @@ const webPush = new WebPush(components.webPush, {
 });
 const webPushTest = new WebPush(components.webPush, { testMode: true });
 
-const vCounts = v.object({
+const countsValidator = v.object({
   queued: v.number(),
   sent: v.number(),
   failed: v.number(),
   gone: v.number(),
 });
 
-const vUrgency = v.union(
+const urgencyValidator = v.union(
   v.literal("very-low"),
   v.literal("low"),
   v.literal("normal"),
   v.literal("high"),
 );
 
-const vNotificationSummary = v.object({
+const notificationSummaryValidator = v.object({
   notificationId: v.string(),
   payload: v.string(),
   options: v.object({ ttlSeconds: v.number(), urgency: v.string(), topic: v.optional(v.string()) }),
   status: v.string(),
-  counts: vCounts,
+  counts: countsValidator,
   testMode: v.boolean(),
   createdAt: v.number(),
 });
@@ -42,7 +43,7 @@ const vNotificationSummary = v.object({
 export const recordSubscription = internalMutation({
   args: {
     userId: v.string(),
-    subscription: vPushSubscription,
+    subscription: pushSubscriptionValidator,
     userAgent: v.optional(v.string()),
   },
   returns: v.object({ subscriptionId: v.string(), created: v.boolean() }),
@@ -69,7 +70,7 @@ export const sendNotification = internalMutation({
     url: v.optional(v.string()),
     idempotencyKey: v.optional(v.string()),
     ttlSeconds: v.optional(v.number()),
-    urgency: v.optional(vUrgency),
+    urgency: v.optional(urgencyValidator),
     topic: v.optional(v.string()),
   },
   returns: v.union(v.string(), v.null()),
@@ -134,7 +135,7 @@ export const getBatch = internalQuery({
   returns: v.union(
     v.object({
       status: v.union(v.literal("running"), v.literal("done"), v.literal("failed")),
-      errorCode: vWebPushBatchCompleteArgs.fields.errorCode,
+      errorCode: webPushBatchCompleteArgsValidator.fields.errorCode,
       total: v.number(),
       processed: v.number(),
       notificationIds: v.array(v.string()),
@@ -160,7 +161,7 @@ function summarize(n: NotificationRow) {
 
 export const listNotifications = internalQuery({
   args: { userId: v.string(), paginationOpts: paginationOptsValidator },
-  returns: paginationResultValidator(vNotificationSummary),
+  returns: paginationResultValidator(notificationSummaryValidator),
   handler: async (ctx, args) => {
     const result = await webPush.notifications.list(ctx, args);
     return { ...result, page: result.page.map(summarize) };
@@ -169,7 +170,7 @@ export const listNotifications = internalQuery({
 
 export const getNotification = internalQuery({
   args: { notificationId: v.string(), userId: v.string() },
-  returns: vNotificationSummary,
+  returns: notificationSummaryValidator,
   handler: async (ctx, args) => {
     const n = await webPush.notifications.get(ctx, args);
     return summarize(n);
@@ -189,7 +190,11 @@ function summarizeDelivery(d: DeliveryRow) {
 export const listDeliveries = internalQuery({
   args: { notificationId: v.string(), userId: v.string() },
   returns: v.array(
-    v.object({ status: v.string(), attempts: v.number(), errorKind: v.optional(v.string()) }),
+    v.object({
+      status: v.string(),
+      attempts: v.number(),
+      errorKind: v.optional(deliveryErrorKindValidator),
+    }),
   ),
   handler: async (ctx, args) => {
     const rows = await webPush.deliveries.list(ctx, args);
@@ -202,7 +207,7 @@ export const listNotificationResults = internalQuery({
   returns: v.array(
     v.object({
       notificationId: v.string(),
-      status: vWebPushNotificationCompleteArgs.fields.status,
+      status: webPushNotificationCompleteArgsValidator.fields.status,
       sent: v.number(),
       failed: v.number(),
       gone: v.number(),
@@ -226,8 +231,8 @@ export const listNotificationResults = internalQuery({
 export const getSubscriptionStatus = internalQuery({
   args: { userId: v.string() },
   returns: v.object({
-    subscriptions: v.number(),
-    paused: v.number(),
+    activeCount: v.number(),
+    pausedCount: v.number(),
     lastSuccessAt: v.optional(v.number()),
   }),
   handler: (ctx, args) => webPush.subscriptions.getStatus(ctx, args),
@@ -245,7 +250,7 @@ export const resumeSubscriptions = internalMutation({
   handler: (ctx, args) => webPush.subscriptions.resume(ctx, args),
 });
 
-export const verifyDeliveries = internalAction({
+export const verifyConfig = internalAction({
   args: {},
   returns: v.object({
     ok: v.boolean(),
@@ -253,5 +258,5 @@ export const verifyDeliveries = internalAction({
     config: v.object({ configured: v.boolean(), problem: v.optional(v.string()) }),
     checks: v.array(v.object({ name: v.string(), ok: v.boolean(), error: v.optional(v.string()) })),
   }),
-  handler: (ctx) => webPush.deliveries.verify(ctx, {}),
+  handler: (ctx) => webPush.config.verify(ctx),
 });

@@ -1,6 +1,6 @@
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { v } from "convex/values";
-import { vPushSubscription, WebPush } from "@operatornest/convex-web-push";
+import { pushSubscriptionValidator, WebPush } from "@operatornest/convex-web-push";
 import { components, internal } from "./_generated/api.js";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 
@@ -15,17 +15,17 @@ async function requireUserId(ctx: QueryCtx | MutationCtx): Promise<string> {
   return identity.tokenIdentifier;
 }
 
-export const applicationServerKey = query({
+export const getConfig = query({
   args: {},
-  returns: v.union(v.string(), v.null()),
+  returns: v.object({ applicationServerKey: v.union(v.string(), v.null()) }),
   handler: async (ctx) => {
     await requireUserId(ctx);
-    return webPush.subscriptions.readApplicationServerKey(ctx, {});
+    return webPush.config.get(ctx);
   },
 });
 
 export const recordSubscription = mutation({
-  args: { subscription: vPushSubscription, userAgent: v.optional(v.string()) },
+  args: { subscription: pushSubscriptionValidator, userAgent: v.optional(v.string()) },
   returns: v.object({ subscriptionId: v.string(), created: v.boolean() }),
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
@@ -63,8 +63,8 @@ export const notifyMe = mutation({
 export const getMySubscriptionStatus = query({
   args: {},
   returns: v.object({
-    subscriptions: v.number(),
-    paused: v.number(),
+    activeCount: v.number(),
+    pausedCount: v.number(),
     lastSuccessAt: v.optional(v.number()),
   }),
   handler: async (ctx) => {

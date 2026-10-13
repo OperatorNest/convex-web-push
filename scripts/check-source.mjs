@@ -2,6 +2,16 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
 
+function hasModifier(node, kind) {
+  return (
+    ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) => modifier.kind === kind)
+  );
+}
+
+function hasDoc(node) {
+  return ts.getJSDocCommentsAndTags(node).length > 0;
+}
+
 function sourceRules(source, filename) {
   const file = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
   const violations = [];
@@ -130,6 +140,31 @@ function sourceRules(source, filename) {
     ts.forEachChild(node, visit);
   }
   visit(file);
+  if (/^src\/(client|browser|sw)\//.test(filename)) {
+    for (const statement of file.statements) {
+      if (!hasModifier(statement, ts.SyntaxKind.ExportKeyword)) continue;
+      const declaration = ts.isVariableStatement(statement)
+        ? statement.declarationList.declarations[0]
+        : statement;
+      if (!hasDoc(declaration)) report(statement, "public export needs TSDoc");
+      if (!ts.isClassDeclaration(statement)) continue;
+      for (const member of statement.members) {
+        if (
+          hasModifier(member, ts.SyntaxKind.PrivateKeyword) ||
+          (member.name && ts.isPrivateIdentifier(member.name))
+        )
+          continue;
+        if (!hasDoc(member)) report(member, "public member needs TSDoc");
+        if (
+          ts.isPropertyDeclaration(member) &&
+          member.initializer &&
+          ts.isObjectLiteralExpression(member.initializer)
+        )
+          for (const property of member.initializer.properties)
+            if (!hasDoc(property)) report(property, "client method needs TSDoc");
+      }
+    }
+  }
   return violations;
 }
 

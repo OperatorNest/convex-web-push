@@ -1,21 +1,7 @@
 import { webPushError } from "../shared/errors.js";
+import type { PushNotification } from "../shared/notification.js";
 
-/** A push payload supplies notification display fields and a same-origin click destination. */
-export type PushPayload = {
-  title?: string;
-  body?: string;
-  icon?: string;
-  badge?: string;
-  image?: string;
-  url?: string;
-  tag?: string;
-  renotify?: boolean;
-  requireInteraction?: boolean;
-  silent?: boolean;
-  timestamp?: number;
-  actions?: { action: string; title: string; icon?: string }[];
-  data?: unknown;
-};
+export type { PushNotification } from "../shared/notification.js";
 
 /** Push handler options supply display and click defaults when the payload omits them. */
 export type PushHandlerOptions = {
@@ -55,7 +41,8 @@ type Scope = {
   location: { origin: string };
 };
 
-export function parsePushPayload(data: PushEventLike["data"]): PushPayload {
+/** Parse a push message as a notification JSON object, falling back to its text as the body. */
+export function parsePushPayload(data: PushEventLike["data"]): Partial<PushNotification> {
   if (!data) return {};
   try {
     const parsed: unknown = data.json();
@@ -68,7 +55,11 @@ export function parsePushPayload(data: PushEventLike["data"]): PushPayload {
   }
 }
 
-export function buildNotification(payload: PushPayload, options: PushHandlerOptions = {}) {
+/** Build notification display options whose `data` is `{ url, extra }`, with the sender's `data` in `extra`. */
+export function buildNotification(
+  payload: Partial<PushNotification>,
+  options: PushHandlerOptions = {},
+) {
   return {
     title: payload.title ?? options.defaultTitle ?? "Notification",
     options: {
@@ -87,6 +78,7 @@ export function buildNotification(payload: PushPayload, options: PushHandlerOpti
   };
 }
 
+/** Resolve a click URL against the worker origin, falling back for cross-origin or malformed URLs. */
 export function resolveClickUrl(data: unknown, origin: string, fallback = "/"): string {
   try {
     const root = new URL("/", origin);
@@ -105,6 +97,7 @@ export function resolveClickUrl(data: unknown, origin: string, fallback = "/"): 
   }
 }
 
+/** Register push and notificationclick listeners that display notifications and focus or open the click URL. */
 export function registerPushHandlers(scope: Scope, options: PushHandlerOptions = {}): void {
   try {
     scope.addEventListener("push", (value: unknown) => {
@@ -136,11 +129,14 @@ export function registerPushHandlers(scope: Scope, options: PushHandlerOptions =
           });
           const exact = windows.find((client) => client.url === target);
           if (exact) return exact.focus();
-          const any = windows[0];
-          if (any) {
-            await any.navigate?.(target);
-            return any.focus();
-          }
+          const firstWindow = windows[0];
+          const navigated =
+            firstWindow?.navigate !== undefined &&
+            (await firstWindow.navigate(target).then(
+              () => true,
+              () => false,
+            ));
+          if (firstWindow && navigated) return firstWindow.focus();
           return scope.clients.openWindow(target);
         }),
       );
