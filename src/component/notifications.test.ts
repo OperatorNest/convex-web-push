@@ -1145,13 +1145,19 @@ test("a failed workpool result is retried, a canceled one is not, a garbled one 
     });
   await complete({ kind: "failed", error: "boom" });
   const retried = await t.run((ctx) => ctx.db.get("deliveries", deliveryId));
-  expect(retried).toMatchObject({ status: "retry", errorKind: "action_failed", attempts: 1 });
+  expect(retried).toMatchObject({
+    status: "retry",
+    errorKind: "action_failed",
+    attempts: 1,
+    error: { retryable: false },
+  });
 
   await complete({ kind: "success", returnValue: "not an outcome" });
   expect(await t.run((ctx) => ctx.db.get("deliveries", deliveryId))).toMatchObject({
     status: "retry",
     errorKind: "invalid_result",
     attempts: 2,
+    error: { retryable: false },
   });
 
   await complete({ kind: "canceled" });
@@ -1868,4 +1874,31 @@ test("an idempotency key reused across send and sendBatch compares the notificat
     }),
     "WEB_PUSH_IDEMPOTENCY_CONFLICT",
   );
+});
+
+test.each(["cursor", "endCursor"] as const)(
+  "notification history rejects a six-value %s for its five-value index key",
+  async (field) => {
+    const t = setupSimulatedTest();
+    await expectWebPushError(
+      t.query(api.notifications.list, {
+        userId: "u",
+        paginationOpts: {
+          numItems: 1,
+          cursor: null,
+          [field]: JSON.stringify(["u", true, 0, 0, "id", "extra"]),
+        },
+      }),
+      "WEB_PUSH_INVALID_ARGUMENT",
+    );
+  },
+);
+
+test("notification history accepts a cursor shorter than its index key", async () => {
+  const t = setupSimulatedTest();
+  const page = await t.query(api.notifications.list, {
+    userId: "u",
+    paginationOpts: { numItems: 1, cursor: JSON.stringify(["u", true]) },
+  });
+  expect(page.page).toEqual([]);
 });

@@ -96,7 +96,7 @@ export async function sendWebPush(input: SendWebPushInput): Promise<SendOutcome>
     if (outcome.kind !== "sent")
       outcome.error = webPushError("WEB_PUSH_PROVIDER_ERROR", {
         providerStatus: response.status,
-        retryable: outcome.kind === "retryable",
+        retryable: response.status === 429,
       }).data;
     return { ...outcome, attempted: true };
   } catch {
@@ -105,7 +105,7 @@ export async function sendWebPush(input: SendWebPushInput): Promise<SendOutcome>
       kind: "retryable",
       attempted: true,
       errorKind: aborted ? "timeout" : "network_error",
-      error: webPushError("WEB_PUSH_NETWORK_ERROR", { retryable: true }).data,
+      error: webPushError("WEB_PUSH_NETWORK_ERROR", { retryable: false }).data,
     };
   } finally {
     clearTimeout(timer);

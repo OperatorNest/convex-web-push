@@ -112,12 +112,16 @@ test("a response body that fails or exceeds its bound keeps the status outcome",
   expect(await sendWebPush(input)).toMatchObject({ kind: "sent", attempted: true });
 });
 
-test("network errors and timeouts are retryable", async () => {
+test("network errors and timeouts schedule retries without declaring repetition safe", async () => {
   const { input } = await setup();
   vi.stubGlobal("fetch", async () => {
     throw new TypeError("connection reset");
   });
-  expect(await sendWebPush(input)).toMatchObject({ kind: "retryable", errorKind: "network_error" });
+  expect(await sendWebPush(input)).toMatchObject({
+    kind: "retryable",
+    errorKind: "network_error",
+    error: { retryable: false },
+  });
 
   vi.stubGlobal("setTimeout", (callback: () => void) => {
     queueMicrotask(callback);
@@ -131,7 +135,11 @@ test("network errors and timeouts are retryable", async () => {
         init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
       }),
   );
-  expect(await sendWebPush(input)).toMatchObject({ kind: "retryable", errorKind: "timeout" });
+  expect(await sendWebPush(input)).toMatchObject({
+    kind: "retryable",
+    errorKind: "timeout",
+    error: { retryable: false },
+  });
 });
 
 test("invalid subscription keys are a permanent failure without a network call", async () => {

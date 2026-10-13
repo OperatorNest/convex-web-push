@@ -17,7 +17,9 @@
 - Breaking: the convex-helpers peer range is ^0.1.128.
 - Breaking: an idempotency key must be 1 to 128 characters from A-Z, a-z, 0-9, _ and -; any other key raises WEB_PUSH_INVALID_ARGUMENT.
 - Breaking: WEB_PUSH_INVALID_ARGUMENT has the message "An argument is missing, malformed or out of bounds." and WEB_PUSH_NETWORK_ERROR has the message "The request to the push service failed before a response arrived."; isWebPushError accepts only these messages for these codes.
-- History cursors are accepted when they are at most 4096 characters and a JSON array of at most 16 primitive values.
+- Breaking: notifications.list rejects cursor and endCursor arrays longer than its five-value index key with WEB_PUSH_INVALID_ARGUMENT; shorter prefix cursors remain valid.
+- Delivery attempts compare the millisecond deadline before rounding the outbound TTL, so a live final fraction of a second sends with TTL 0.
+- Breaking: delivery error.retryable is true only for HTTP 429; ambiguous network failures, timeouts, HTTP 408 and 5xx store false independently of the internal retry schedule.
 - The client passes omitted optional arguments as undefined.
 - A package error in a batch continuation step, including an idempotency conflict, fails the batch after saving the users already enqueued and schedules onBatchComplete.
 - Validate ttlSeconds and the onComplete function handle before reading rows, including for users without subscriptions.

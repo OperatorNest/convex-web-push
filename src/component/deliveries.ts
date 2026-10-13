@@ -61,8 +61,8 @@ export const begin = internalMutation({
     }
 
     const ttlSeconds = notification.options.ttlSeconds;
-    const remaining = Math.floor((notification.createdAt + ttlSeconds * 1000 - now) / 1000);
-    if (ttlSeconds > 0 && remaining <= 0)
+    const expiresAt = notification.createdAt + ttlSeconds * 1000;
+    if (ttlSeconds > 0 && now >= expiresAt)
       return skip({ kind: "permanent", errorKind: "ttl_expired" });
     if (ttlSeconds === 0 && delivery.attempts > 0) {
       return skip({ kind: "permanent", errorKind: "ttl_expired" });
@@ -75,7 +75,7 @@ export const begin = internalMutation({
       auth: subscription.auth,
       vapidPublicKeyHash: subscription.vapidPublicKeyHash,
       payload: notification.payload,
-      ttlSeconds: ttlSeconds === 0 ? 0 : remaining,
+      ttlSeconds: ttlSeconds === 0 ? 0 : Math.floor((expiresAt - now) / 1000),
       urgency: notification.options.urgency,
       ...(notification.options.topic !== undefined && { topic: notification.options.topic }),
       ...(notification.payloadEncoding !== undefined && {
@@ -105,7 +105,7 @@ export const onComplete = internalMutation({
       outcome = {
         kind: "retryable",
         errorKind: "action_failed",
-        error: webPushError("WEB_PUSH_NETWORK_ERROR", { retryable: true }).data,
+        error: webPushError("WEB_PUSH_NETWORK_ERROR", { retryable: false }).data,
       };
     } else outcome = { kind: "permanent", errorKind: "canceled" };
 
@@ -124,7 +124,7 @@ export const onComplete = internalMutation({
               outcome.error?.code ??
                 (outcome.providerStatus ? "WEB_PUSH_PROVIDER_ERROR" : "WEB_PUSH_NETWORK_ERROR"),
               {
-                retryable: outcome.kind === "retryable",
+                retryable: outcome.error?.retryable ?? false,
                 ...(outcome.providerStatus &&
                 outcome.providerStatus >= 100 &&
                 outcome.providerStatus <= 599

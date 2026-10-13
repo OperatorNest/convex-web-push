@@ -363,7 +363,7 @@ export const list = query({
         q.eq("userId", userId).eq("testMode", resolveTestMode(testMode, env)),
       )
       .order("desc")
-      .paginate(boundedPage(paginationOpts));
+      .paginate(boundedPage(paginationOpts, 5));
   },
 });
 
