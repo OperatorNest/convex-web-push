@@ -38,7 +38,7 @@ Never hand-edit `src/component/_generated/` or `example/convex/_generated/`. Ini
 
 ## Toolchain and verification
 
-Use Node 24 and pnpm 12.9.1 through mise. TypeScript 7 builds; TypeScript 6 supports tooling. Keep strict, unchecked-index, override and fallthrough checks enabled. No tsconfig sets `exactOptionalPropertyTypes`, so it stays off: convex-helpers pagination ships TypeScript source that fails it.
+Keep strict, unchecked-index, override and fallthrough checks enabled. No tsconfig sets `exactOptionalPropertyTypes`, so it stays off: convex-helpers pagination ships TypeScript source that fails it.
 
 Preserve coverage thresholds and the canonical source checks. Do not change `pnpm-workspace.yaml`, `knip.json` or `scripts/with-local-lock.mjs`.
 
