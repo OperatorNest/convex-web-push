@@ -137,6 +137,15 @@ export class WebPush {
       });
     },
 
+    /** Read the user’s subscription at `endpoint`, or null when no subscription at that endpoint belongs to the user. */
+    get: (ctx: QueryContext, args: { userId: string; endpoint: string }) => {
+      return ctx.runQuery(this.component.subscriptions.get, {
+        testMode: this.options.testMode,
+        userId: args.userId,
+        endpoint: args.endpoint,
+      });
+    },
+
     /** Read the user’s active and paused subscription counts; active means recorded and not paused, so a subscription past its `expirationTime` counts as active until the next send marks it gone. */
     getStatus: (ctx: QueryContext, args: { userId: string }) => {
       return ctx.runQuery(this.component.subscriptions.getStatus, {
@@ -164,10 +173,14 @@ export class WebPush {
 
   /** Sends, reads and lists push notifications and notification batches. */
   readonly notifications = {
-    /** Enqueue a displayed notification for the user’s active subscriptions. */
+    /** Enqueue a displayed notification for the user’s active subscriptions, or only the active one at `endpoint`. */
     send: async (
       ctx: MutationContext,
-      args: { userId: string; notification: PushNotification } & SendOptions,
+      args: {
+        userId: string;
+        notification: PushNotification;
+        endpoint?: string | undefined;
+      } & SendOptions,
     ) => {
       const fields = await buildSendFields(
         this.options,
@@ -177,6 +190,7 @@ export class WebPush {
       );
       return ctx.runMutation(this.component.notifications.send, {
         userId: args.userId,
+        endpoint: args.endpoint,
         payload: fields.payload,
         payloadEncoding: fields.payloadEncoding,
         ttlSeconds: fields.ttlSeconds,
@@ -217,10 +231,14 @@ export class WebPush {
       });
     },
 
-    /** Enqueue a raw push message for a custom service worker. */
+    /** Enqueue a raw push message for a custom service worker, optionally only to the active subscription at `endpoint`. */
     sendRaw: async (
       ctx: MutationContext,
-      args: { userId: string; payload: string | Uint8Array } & SendOptions,
+      args: {
+        userId: string;
+        payload: string | Uint8Array;
+        endpoint?: string | undefined;
+      } & SendOptions,
     ) => {
       assertPayloadSize(
         typeof args.payload === "string" ? utf8ByteLength(args.payload) : args.payload.byteLength,
@@ -238,6 +256,7 @@ export class WebPush {
       );
       return ctx.runMutation(this.component.notifications.send, {
         userId: args.userId,
+        endpoint: args.endpoint,
         payload: fields.payload,
         payloadEncoding: fields.payloadEncoding,
         ttlSeconds: fields.ttlSeconds,
@@ -288,6 +307,17 @@ export class WebPush {
       return ctx.runQuery(this.component.deliveries.list, {
         testMode: this.options.testMode,
         notificationId: args.notificationId,
+        userId: args.userId,
+      });
+    },
+  };
+
+  /** Purges a user’s rows from the component. */
+  readonly users = {
+    /** Delete the user’s subscriptions, notifications, delivery attempts and registration generation row in bounded steps; registrations and notifications created after the purge began survive. */
+    purge: (ctx: MutationContext, args: { userId: string }) => {
+      return ctx.runMutation(this.component.users.purge, {
+        testMode: this.options.testMode,
         userId: args.userId,
       });
     },

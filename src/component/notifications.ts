@@ -34,6 +34,7 @@ import {
   sendFieldsValidator,
   webPushErrorValidator,
 } from "../shared/validators.js";
+import { sha256Hex } from "../shared/sha256.js";
 import { vapidKeyFingerprint } from "../shared/vapid.js";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
@@ -43,6 +44,7 @@ import {
   MAX_BATCH_USERS,
   MAX_SUBSCRIPTIONS_PER_USER,
 } from "./limits.js";
+import { findByEndpoint } from "./owners.js";
 import { deliveryPool } from "./pool.js";
 import schema from "./schema.js";
 
@@ -86,6 +88,7 @@ async function findReplay(
   userId: string,
   args: SendFields,
   testMode: boolean,
+  endpointHash?: string,
 ): Promise<Id<"notifications"> | undefined> {
   if (args.idempotencyKey === undefined) return undefined;
   const key = args.idempotencyKey;
@@ -104,10 +107,28 @@ async function findReplay(
     existing.options.topic !== args.topic ||
     JSON.stringify(existing.allowedPushHosts ?? []) !==
       JSON.stringify(args.allowedPushHosts ?? []) ||
-    existing.onComplete !== args.onComplete
+    existing.onComplete !== args.onComplete ||
+    existing.endpointHash !== endpointHash
   )
     throw webPushError("WEB_PUSH_IDEMPOTENCY_CONFLICT");
   return existing._id;
+}
+
+async function activeSubscriptions(
+  ctx: MutationCtx,
+  userId: string,
+  testMode: boolean,
+  endpoint: string | undefined,
+): Promise<Doc<"subscriptions">[]> {
+  if (endpoint === undefined)
+    return ctx.db
+      .query("subscriptions")
+      .withIndex("by_userId_and_testMode_and_status", (q) =>
+        q.eq("userId", userId).eq("testMode", testMode).eq("status", "active"),
+      )
+      .take(MAX_SUBSCRIPTIONS_PER_USER);
+  const row = await findByEndpoint(ctx, endpoint, testMode);
+  return row?.userId === userId && row.status === "active" ? [row] : [];
 }
 
 async function enqueueForUser(
@@ -115,14 +136,10 @@ async function enqueueForUser(
   userId: string,
   args: SendFields,
   testMode: boolean,
+  endpoint?: string,
 ): Promise<{ notificationId: Id<"notifications"> | null; cost: number }> {
   const now = Date.now();
-  const candidates = await ctx.db
-    .query("subscriptions")
-    .withIndex("by_userId_and_testMode_and_status", (q) =>
-      q.eq("userId", userId).eq("testMode", testMode).eq("status", "active"),
-    )
-    .take(MAX_SUBSCRIPTIONS_PER_USER);
+  const candidates = await activeSubscriptions(ctx, userId, testMode, endpoint);
   const subscriptions = [];
   for (const subscription of candidates) {
     if (subscription.expirationTime !== undefined && subscription.expirationTime <= now) {
@@ -147,6 +164,7 @@ async function enqueueForUser(
     testMode,
     ...(args.allowedPushHosts !== undefined && { allowedPushHosts: args.allowedPushHosts }),
     ...(args.onComplete !== undefined && { onComplete: args.onComplete }),
+    ...(endpoint !== undefined && { endpointHash: sha256Hex(endpoint) }),
   });
 
   const pool = deliveryPool();
@@ -171,15 +189,17 @@ async function enqueueForUser(
 }
 
 export const send = mutation({
-  args: { userId: v.string(), ...sendFieldsValidator.fields },
+  args: { userId: v.string(), endpoint: v.optional(v.string()), ...sendFieldsValidator.fields },
   returns: v.union(v.id("notifications"), v.null()),
-  handler: async (ctx, { userId, ...args }) => {
+  handler: async (ctx, { userId, endpoint, ...args }) => {
     boundedUtf8String(userId, 256);
+    if (endpoint !== undefined) boundedString(endpoint, 4096);
     const testMode = resolveTestMode(args.testMode, env);
     validateSend(args, testMode, readConfig(env));
-    const replay = await findReplay(ctx, userId, args, testMode);
+    const endpointHash = endpoint === undefined ? undefined : sha256Hex(endpoint);
+    const replay = await findReplay(ctx, userId, args, testMode, endpointHash);
     if (replay !== undefined) return replay;
-    return (await enqueueForUser(ctx, userId, args, testMode)).notificationId;
+    return (await enqueueForUser(ctx, userId, args, testMode, endpoint)).notificationId;
   },
 });
 

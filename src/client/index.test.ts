@@ -309,6 +309,7 @@ test("a plain client passes omitted optional arguments as undefined", async () =
   ).rejects.toBe(stop);
   expect(lastArgs()).toStrictEqual({
     userId: "u1",
+    endpoint: undefined,
     payload: '{"title":"x"}',
     payloadEncoding: undefined,
     ttlSeconds: 86400,
@@ -395,3 +396,60 @@ test.each([false, true])(
     else expect(results[0]?.errorCode).toBeUndefined();
   },
 );
+
+test("subscriptions.get, an endpoint send and users.purge reach the component through the client", async () => {
+  const t = setup();
+  const device = await subscribe(t, "u1");
+  await subscribe(t, "u1");
+  expect(
+    await t.query(internal.admin.getSubscription, { userId: "u1", endpoint: device.endpoint }),
+  ).toMatchObject({ status: "active", pushService: "fcm" });
+  expect(
+    await t.query(internal.admin.getSubscription, { userId: "u2", endpoint: device.endpoint }),
+  ).toBeNull();
+  const id = required(
+    await t.mutation(internal.admin.sendNotification, {
+      userId: "u1",
+      title: "Only this device",
+      endpoint: device.endpoint,
+    }),
+    "the notification id",
+  );
+  await drain(t);
+  expect(
+    await t.query(internal.admin.listDeliveries, { notificationId: id, userId: "u1" }),
+  ).toEqual([{ status: "sent", attempts: 1 }]);
+  expect(await t.mutation(internal.admin.purgeUser, { userId: "u1" })).toEqual({
+    removed: 4,
+    done: true,
+  });
+  expect(
+    await t.query(internal.admin.getSubscription, { userId: "u1", endpoint: device.endpoint }),
+  ).toBeNull();
+  expect((await page(t, "u1")).page).toEqual([]);
+});
+
+test("the new client methods forward the client's test-mode option and pass omitted endpoints as undefined", async () => {
+  const { ctx, stop, lastArgs } = recorder();
+  const simulated = new WebPush(components.webPush, { testMode: true });
+  await expect(
+    simulated.subscriptions.get(ctx, { userId: "u1", endpoint: "https://fcm.googleapis.com/x" }),
+  ).rejects.toBe(stop);
+  expect(lastArgs()).toStrictEqual({
+    testMode: true,
+    userId: "u1",
+    endpoint: "https://fcm.googleapis.com/x",
+  });
+  await expect(simulated.users.purge(ctx, { userId: "u1" })).rejects.toBe(stop);
+  expect(lastArgs()).toStrictEqual({ testMode: true, userId: "u1" });
+  await expect(
+    simulated.notifications.sendRaw(ctx, {
+      ttlSeconds: 60,
+      urgency: "low",
+      userId: "u1",
+      payload: "raw",
+      endpoint: "https://fcm.googleapis.com/x",
+    }),
+  ).rejects.toBe(stop);
+  expect(lastArgs()).toMatchObject({ endpoint: "https://fcm.googleapis.com/x" });
+});

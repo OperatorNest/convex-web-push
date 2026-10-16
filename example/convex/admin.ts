@@ -30,6 +30,18 @@ const urgencyValidator = v.union(
   v.literal("high"),
 );
 
+const subscriptionLookupValidator = v.object({
+  subscriptionId: v.string(),
+  status: v.union(v.literal("active"), v.literal("paused"), v.literal("gone")),
+  pushService: v.string(),
+  expirationTime: v.optional(v.number()),
+  consecutiveFailures: v.number(),
+  lastSuccessAt: v.optional(v.number()),
+  lastFailureAt: v.optional(v.number()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+});
+
 const notificationSummaryValidator = v.object({
   notificationId: v.string(),
   payload: v.string(),
@@ -65,6 +77,7 @@ export const removeAll = internalMutation({
 export const sendNotification = internalMutation({
   args: {
     userId: v.string(),
+    endpoint: v.optional(v.string()),
     title: v.string(),
     body: v.optional(v.string()),
     url: v.optional(v.string()),
@@ -76,10 +89,11 @@ export const sendNotification = internalMutation({
   returns: v.union(v.string(), v.null()),
   handler: (
     ctx,
-    { userId, idempotencyKey, ttlSeconds, urgency, topic, ...notification },
+    { userId, endpoint, idempotencyKey, ttlSeconds, urgency, topic, ...notification },
   ): Promise<string | null> =>
     webPush.notifications.send(ctx, {
       userId,
+      endpoint,
       notification,
       idempotencyKey,
       ttlSeconds: ttlSeconds ?? 86400,
@@ -223,6 +237,18 @@ export const listNotificationResults = internalQuery({
       gone,
     }));
   },
+});
+
+export const getSubscription = internalQuery({
+  args: { userId: v.string(), endpoint: v.string() },
+  returns: v.union(subscriptionLookupValidator, v.null()),
+  handler: (ctx, args) => webPush.subscriptions.get(ctx, args),
+});
+
+export const purgeUser = internalMutation({
+  args: { userId: v.string() },
+  returns: v.object({ removed: v.number(), done: v.boolean() }),
+  handler: (ctx, args) => webPush.users.purge(ctx, args),
 });
 
 export const getSubscriptionStatus = internalQuery({

@@ -1902,3 +1902,94 @@ test("notification history accepts a cursor shorter than its index key", async (
   });
   expect(page.page).toEqual([]);
 });
+
+test("an endpoint restricts fan-out to that subscription of the user", async () => {
+  await configureVapid();
+  const calls = stubFetch(respond(201));
+  const t = setupLiveTest();
+  const target = await subscribe(t);
+  await subscribe(t);
+  const id = await t.mutation(api.notifications.send, {
+    ttlSeconds: 86400,
+    urgency: "normal",
+    userId: "u1",
+    payload: "x",
+    endpoint: target.subscription.endpoint,
+  });
+  const { notification, deliveries } = await finished(t, required(id, "the notification id"));
+  expect(calls.map((call) => call.url)).toEqual([target.subscription.endpoint]);
+  expect(deliveries).toHaveLength(1);
+  expect(notification).toMatchObject({
+    status: "delivered",
+    counts: { queued: 0, sent: 1, failed: 0, gone: 0 },
+  });
+});
+
+test("an endpoint send returns null unless the endpoint is an active subscription of the user", async () => {
+  const t = setupSimulatedTest();
+  const send = (userId: string, endpoint: string) =>
+    t.mutation(api.notifications.send, {
+      ttlSeconds: 86400,
+      urgency: "normal",
+      userId,
+      payload: "x",
+      endpoint,
+    });
+  const alice = await subscribe(t, "alice");
+  await subscribe(t, "bob");
+  expect(await send("bob", alice.subscription.endpoint)).toBeNull();
+  expect(await send("alice", `${alice.subscription.endpoint}x`)).toBeNull();
+  await t.mutation(api.subscriptions.pause, { userId: "alice" });
+  expect(await send("alice", alice.subscription.endpoint)).toBeNull();
+  await t.mutation(api.subscriptions.resume, { userId: "alice" });
+  expect(await send("alice", alice.subscription.endpoint)).not.toBeNull();
+  expect(await t.run((ctx) => ctx.db.query("deliveries").take(100))).toHaveLength(1);
+  await expectWebPushError(send("alice", ""), "WEB_PUSH_INVALID_ARGUMENT");
+});
+
+test("an endpoint send marks that subscription gone when it has expired", async () => {
+  const t = setupSimulatedTest();
+  const { subscription } = await makeSubscription();
+  const saved = await t.mutation(api.subscriptions.record, {
+    userId: "u1",
+    subscription: { ...subscription, expirationTime: Date.now() + 1000 },
+  });
+  vi.setSystemTime(Date.now() + 2000);
+  expect(
+    await t.mutation(api.notifications.send, {
+      ttlSeconds: 86400,
+      urgency: "normal",
+      userId: "u1",
+      payload: "x",
+      endpoint: subscription.endpoint,
+    }),
+  ).toBeNull();
+  expect(await t.run((ctx) => ctx.db.get("subscriptions", saved.subscriptionId))).toMatchObject({
+    status: "gone",
+  });
+});
+
+test("an idempotency key compares the endpoint", async () => {
+  const t = setupSimulatedTest();
+  const first = await subscribe(t);
+  const second = await subscribe(t);
+  const send = (endpoint?: string) =>
+    t.mutation(api.notifications.send, {
+      ttlSeconds: 86400,
+      urgency: "normal",
+      userId: "u1",
+      payload: "x",
+      idempotencyKey: "k1",
+      endpoint,
+    });
+  const id = await send(first.subscription.endpoint);
+  expect(await send(first.subscription.endpoint)).toBe(id);
+  await expectWebPushError(send(second.subscription.endpoint), "WEB_PUSH_IDEMPOTENCY_CONFLICT");
+  await expectWebPushError(send(), "WEB_PUSH_IDEMPOTENCY_CONFLICT");
+  const row = required(
+    await t.run((ctx) => ctx.db.get("notifications", required(id, "the notification id"))),
+    "the notification row",
+  );
+  expect(row.endpointHash).toMatch(/^[0-9a-f]{64}$/);
+  expect(JSON.stringify(row)).not.toContain(first.subscription.endpoint);
+});

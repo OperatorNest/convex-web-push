@@ -47,16 +47,32 @@ export const removeSubscription = mutation({
 });
 
 export const notifyMe = mutation({
-  args: { title: v.string(), body: v.optional(v.string()), url: v.optional(v.string()) },
+  args: {
+    title: v.string(),
+    body: v.optional(v.string()),
+    url: v.optional(v.string()),
+    endpoint: v.optional(v.string()),
+  },
   returns: v.union(v.string(), v.null()),
-  handler: async (ctx, notification): Promise<string | null> => {
+  handler: async (ctx, { endpoint, ...notification }): Promise<string | null> => {
     const userId = await requireUserId(ctx);
     return webPush.notifications.send(ctx, {
       ttlSeconds: 86400,
       urgency: "normal",
       userId,
       notification,
+      endpoint,
     });
+  },
+});
+
+export const getMySubscription = query({
+  args: { endpoint: v.string() },
+  returns: v.union(v.object({ status: v.string() }), v.null()),
+  handler: async (ctx, { endpoint }) => {
+    const userId = await requireUserId(ctx);
+    const subscription = await webPush.subscriptions.get(ctx, { userId, endpoint });
+    return subscription === null ? null : { status: subscription.status };
   },
 });
 

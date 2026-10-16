@@ -15,8 +15,10 @@ import type * as deliver from "../deliver.js";
 import type * as deliveries from "../deliveries.js";
 import type * as limits from "../limits.js";
 import type * as notifications from "../notifications.js";
+import type * as owners from "../owners.js";
 import type * as pool from "../pool.js";
 import type * as subscriptions from "../subscriptions.js";
+import type * as users from "../users.js";
 
 import type {
   ApiFromModules,
@@ -33,8 +35,10 @@ const fullApi: ApiFromModules<{
   deliveries: typeof deliveries;
   limits: typeof limits;
   notifications: typeof notifications;
+  owners: typeof owners;
   pool: typeof pool;
   subscriptions: typeof subscriptions;
+  users: typeof users;
 }> = anyApi as any;
 
 /**
