@@ -32,6 +32,7 @@ function assertEqual(actual, expected, what) {
 const ADMIN_QUERIES = new Set([
   "getBatch",
   "getNotification",
+  "getSubscription",
   "getSubscriptionStatus",
   "listDeliveries",
   "listNotificationResults",
@@ -303,6 +304,59 @@ await runSmoke(async (backend) => {
     assertSmoke(
       id !== null && (await settled(id, user)).status === "delivered",
       "resume did not restore",
+    );
+  });
+
+  const deviceUser = `${user}-device`;
+  await step(
+    "subscriptions.get reads one endpoint and an endpoint send reaches only it",
+    async () => {
+      const device = await fakeSubscription();
+      await call("recordSubscription", { userId: deviceUser, subscription: device });
+      await call("recordSubscription", {
+        userId: deviceUser,
+        subscription: await fakeSubscription(),
+      });
+      const found = await call("getSubscription", {
+        userId: deviceUser,
+        endpoint: device.endpoint,
+      });
+      assertSmoke(
+        found?.status === "active",
+        `expected an active subscription, got ${canonical(found)}`,
+      );
+      assertEqual(
+        await call("getSubscription", { userId: user, endpoint: device.endpoint }),
+        null,
+        "another user's endpoint",
+      );
+      const id = await call("sendNotification", {
+        userId: deviceUser,
+        title: "this device",
+        endpoint: device.endpoint,
+      });
+      const done = await settled(id, deviceUser);
+      assertEqual(done.counts, { queued: 0, sent: 1, failed: 0, gone: 0 }, "endpoint send counts");
+    },
+  );
+
+  await step("users.purge deletes the user's subscriptions and notifications", async () => {
+    const result = await call("purgeUser", { userId: deviceUser });
+    assertEqual(result, { removed: 4, done: true }, "purge result");
+    assertEqual(
+      (await call("getSubscriptionStatus", { userId: deviceUser })).activeCount,
+      0,
+      "subscriptions left",
+    );
+    assertEqual(
+      (
+        await call("listNotifications", {
+          userId: deviceUser,
+          paginationOpts: { numItems: 10, cursor: null },
+        })
+      ).page,
+      [],
+      "notifications left",
     );
   });
 

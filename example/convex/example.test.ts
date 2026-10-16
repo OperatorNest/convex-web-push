@@ -204,3 +204,23 @@ test("equal subjects from different issuers own different subscriptions", async 
     await bob.mutation(api.example.removeSubscription, { endpoint: subscription.endpoint }),
   ).toBe(false);
 });
+
+test("a signed-in user reads and notifies only their own device by endpoint", async () => {
+  const t = setup();
+  const { subscription } = await makeSubscription();
+  const alice = t.withIdentity({ subject: "alice" });
+  const bob = t.withIdentity({ subject: "bob" });
+  await alice.mutation(api.example.recordSubscription, { subscription });
+  await saveSubscription(t, "other-device-owner");
+  const endpoint = subscription.endpoint;
+  expect(await alice.query(api.example.getMySubscription, { endpoint })).toEqual({
+    status: "active",
+  });
+  expect(await bob.query(api.example.getMySubscription, { endpoint })).toBeNull();
+  expect(await bob.mutation(api.example.notifyMe, { title: "x", endpoint })).toBeNull();
+  const id = await alice.mutation(api.example.notifyMe, { title: "this device", endpoint });
+  expect(id).not.toBeNull();
+  expect(
+    await alice.query(api.example.listMyDeliveries, { notificationId: id ?? "missing" }),
+  ).toHaveLength(1);
+});

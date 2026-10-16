@@ -129,6 +129,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             sent: number;
           };
           createdAt: number;
+          endpointHash?: string;
           idempotencyKey?: string;
           onComplete?: string;
           options: {
@@ -198,6 +199,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
               sent: number;
             };
             createdAt: number;
+            endpointHash?: string;
             idempotencyKey?: string;
             onComplete?: string;
             options: {
@@ -221,6 +223,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           allowedPushHosts?: Array<string>;
+          endpoint?: string;
           idempotencyKey?: string;
           onComplete?: string;
           payload: string;
@@ -258,6 +261,23 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
     };
     subscriptions: {
+      get: FunctionReference<
+        "query",
+        "internal",
+        { endpoint: string; testMode?: boolean; userId: string },
+        {
+          consecutiveFailures: number;
+          createdAt: number;
+          expirationTime?: number;
+          lastFailureAt?: number;
+          lastSuccessAt?: number;
+          pushService: "fcm" | "mozilla" | "apple" | "wns" | "other";
+          status: "active" | "paused" | "gone";
+          subscriptionId: string;
+          updatedAt: number;
+        } | null,
+        Name
+      >;
       getStatus: FunctionReference<
         "query",
         "internal",
@@ -308,6 +328,15 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { testMode?: boolean; userId: string },
         number,
+        Name
+      >;
+    };
+    users: {
+      purge: FunctionReference<
+        "mutation",
+        "internal",
+        { testMode?: boolean; userId: string },
+        { done: boolean; removed: number },
         Name
       >;
     };

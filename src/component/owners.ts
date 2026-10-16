@@ -16,6 +16,14 @@ export function findOwner(
     .unique();
 }
 
+/** A purge continuation may delete subscriptions only while its generation is still current or superseded. */
+export function generationIsCurrent(
+  owner: Doc<"subscriptionOwners"> | null,
+  generation: number,
+): boolean {
+  return owner !== null && owner.generation >= generation;
+}
+
 export async function findByEndpoint(
   ctx: QueryCtx | MutationCtx,
   endpoint: string,

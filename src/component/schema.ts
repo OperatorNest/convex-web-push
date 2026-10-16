@@ -64,6 +64,7 @@ export default defineSchema({
     allowedPushHosts: v.optional(v.array(v.string())),
 
     onComplete: v.optional(v.string()),
+    endpointHash: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_userId_and_testMode_and_createdAt", ["userId", "testMode", "createdAt"])

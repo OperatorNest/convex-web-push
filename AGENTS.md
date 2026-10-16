@@ -4,7 +4,7 @@ The package is `@operatornest/convex-web-push`, component name `webPush`.
 
 Read [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and `docs/adr/` before changing behavior. Domain terms and status transitions are defined in [Concepts](README.md#concepts).
 
-The client groups are `config`, `subscriptions`, `notifications` and `deliveries`; each group calls its same-named component module. `src/component/` owns rows, functions, queues and cleanup. `src/client/` owns the app-facing client. `src/shared/` owns encryption, signing, admission, bounds, errors and retries. `src/browser/`, `src/sw/` and `sw/` own browser helpers and service workers. `src/test.ts` registers the component with convex-test. `example/convex/` demonstrates authenticated public functions and internal administration. `bin/` and `scripts/` own the Node CLI and development checks.
+The client groups are `config`, `subscriptions`, `notifications`, `deliveries` and `users`; each group calls its same-named component module. `src/component/` owns rows, functions, queues and cleanup. `src/client/` owns the app-facing client. `src/shared/` owns encryption, signing, admission, bounds, errors and retries. `src/browser/`, `src/sw/` and `sw/` own browser helpers and service workers. `src/test.ts` registers the component with convex-test. `example/convex/` demonstrates authenticated public functions and internal administration. `bin/` and `scripts/` own the Node CLI and development checks.
 
 ## Runtime and security boundaries
 

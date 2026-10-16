@@ -369,3 +369,89 @@ test("subscription removal requires an owner", async () => {
   ).rejects.toThrow();
   expect(await t.run((ctx) => ctx.db.get("subscriptions", saved.subscriptionId))).not.toBeNull();
 });
+
+test("get returns the user's subscription at an endpoint without its keys", async () => {
+  const t = setupSimulatedTest();
+  const { subscription } = await makeSubscription();
+  const saved = await t.mutation(api.subscriptions.record, {
+    userId: "alice",
+    subscription: { ...subscription, expirationTime: 1_900_000_000_000 },
+  });
+  const found = await t.query(api.subscriptions.get, {
+    userId: "alice",
+    endpoint: subscription.endpoint,
+  });
+  expect(found).toMatchObject({
+    subscriptionId: saved.subscriptionId,
+    status: "active",
+    pushService: "fcm",
+    expirationTime: 1_900_000_000_000,
+    consecutiveFailures: 0,
+  });
+  expect(JSON.stringify(found)).not.toContain(subscription.keys.auth);
+  expect(JSON.stringify(found)).not.toContain(subscription.endpoint);
+  await t.mutation(api.subscriptions.pause, { userId: "alice" });
+  expect(
+    await t.query(api.subscriptions.get, { userId: "alice", endpoint: subscription.endpoint }),
+  ).toMatchObject({ status: "paused" });
+});
+
+test("get returns null for another user's endpoint, another test mode or an unknown endpoint", async () => {
+  await configureVapid();
+  const t = setupLiveTest();
+  const { subscription } = await makeSubscription();
+  await t.mutation(api.subscriptions.record, { userId: "alice", subscription, testMode: true });
+  const lookup = (userId: string, endpoint: string, testMode: boolean) =>
+    t.query(api.subscriptions.get, { userId, endpoint, testMode });
+  expect(await lookup("bob", subscription.endpoint, true)).toBeNull();
+  expect(await lookup("alice", subscription.endpoint, false)).toBeNull();
+  expect(await lookup("alice", `${subscription.endpoint}x`, true)).toBeNull();
+  await t.mutation(api.subscriptions.record, { userId: "bob", subscription, testMode: true });
+  expect(await lookup("alice", subscription.endpoint, true)).toBeNull();
+  expect(await lookup("bob", subscription.endpoint, true)).toMatchObject({ status: "active" });
+});
+
+test("get reports a gone subscription and bounds its arguments", async () => {
+  const t = setupSimulatedTest();
+  const { subscription } = await makeSubscription();
+  const saved = await t.mutation(api.subscriptions.record, { userId: "u", subscription });
+  await t.run((ctx) =>
+    ctx.db.patch("subscriptions", saved.subscriptionId, { status: "gone", lastFailureAt: 5 }),
+  );
+  expect(
+    await t.query(api.subscriptions.get, { userId: "u", endpoint: subscription.endpoint }),
+  ).toMatchObject({ status: "gone", lastFailureAt: 5 });
+  await expectWebPushError(
+    t.query(api.subscriptions.get, { userId: "u", endpoint: "" }),
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+  await expectWebPushError(
+    t.query(api.subscriptions.get, { userId: "u", endpoint: "x".repeat(4097) }),
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+  await expectWebPushError(
+    t.query(api.subscriptions.get, { userId: "", endpoint: subscription.endpoint }),
+    "WEB_PUSH_INVALID_ARGUMENT",
+  );
+});
+
+test("a removal continuation stops when its registration generation was reset", async () => {
+  const t = setupSimulatedTest();
+  const { subscription } = await makeSubscription();
+  for (let i = 0; i < 101; i++)
+    await t.mutation(api.subscriptions.record, {
+      userId: "u",
+      subscription: { ...subscription, endpoint: subscription.endpoint + i },
+    });
+  expect((await t.mutation(api.subscriptions.removeAll, { userId: "u" })).done).toBe(false);
+  await t.run(async (ctx) => {
+    const owner = required(
+      await ctx.db.query("subscriptionOwners").first(),
+      "the subscription owner",
+    );
+    await ctx.db.delete("subscriptionOwners", owner._id);
+  });
+  const fresh = await t.mutation(api.subscriptions.record, { userId: "u", subscription });
+  await drain(t);
+  expect(await t.run((ctx) => ctx.db.get("subscriptions", fresh.subscriptionId))).not.toBeNull();
+});
