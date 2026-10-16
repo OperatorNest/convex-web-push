@@ -18,6 +18,7 @@ import {
   type QueryCtx,
 } from "./_generated/server.js";
 import { MAX_SUBSCRIPTIONS_PER_USER, PURGE_BATCH } from "./limits.js";
+import { findByEndpoint, findOwner, purgeResultValidator } from "./owners.js";
 
 function invalid(): never {
   throw webPushError("WEB_PUSH_INVALID_ARGUMENT");
@@ -35,10 +36,7 @@ function keyBytes(value: string, length: number): Uint8Array<ArrayBuffer> {
 }
 
 async function registrationUser(ctx: MutationCtx, userId: string, testMode: boolean) {
-  const found = await ctx.db
-    .query("subscriptionOwners")
-    .withIndex("by_userId_and_testMode", (q) => q.eq("userId", userId).eq("testMode", testMode))
-    .unique();
+  const found = await findOwner(ctx, userId, testMode);
   if (found) return found;
   const id = await ctx.db.insert("subscriptionOwners", { userId, testMode, generation: 0 });
   const created = await ctx.db.get("subscriptionOwners", id);
@@ -117,13 +115,8 @@ export const record = mutation({
       updatedAt: now,
     };
 
-    const existing = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_endpointHash_and_testMode", (q) =>
-        q.eq("endpointHash", endpointHash).eq("testMode", testMode),
-      )
-      .first();
-    if (existing && existing.endpoint === endpoint) {
+    const existing = await findByEndpoint(ctx, endpoint, testMode);
+    if (existing) {
       const keepPaused = existing.status === "paused" && existing.userId === args.userId;
       const alreadyLive = existing.userId === args.userId && existing.status !== "gone";
       if (!alreadyLive) await enforceCap(ctx, args.userId, testMode, now);
@@ -160,14 +153,8 @@ export const remove = mutation({
     const testMode = resolveTestMode(requestedTestMode, env);
     boundedString(endpoint, 4096);
     boundedUtf8String(userId, 256);
-    const existing = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_endpointHash_and_testMode", (q) =>
-        q.eq("endpointHash", sha256Hex(endpoint)).eq("testMode", testMode),
-      )
-      .first();
-    if (!existing || existing.endpoint !== endpoint) return false;
-    if (existing.userId !== userId) return false;
+    const existing = await findByEndpoint(ctx, endpoint, testMode);
+    if (!existing || existing.userId !== userId) return false;
     await ctx.db.delete("subscriptions", existing._id);
     return true;
   },
@@ -195,8 +182,6 @@ async function purgeUserBatch(
     });
   return { removed: rows.length, done };
 }
-
-const purgeResultValidator = v.object({ removed: v.number(), done: v.boolean() });
 
 export const removeAll = mutation({
   args: { userId: v.string(), testMode: v.optional(v.boolean()) },
